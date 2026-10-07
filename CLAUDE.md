@@ -152,7 +152,8 @@ From repo root:
 ## Known issues / quirks
 
 - **Claude desktop app sandbox:** shells started by Claude redirect writes under `%APPDATA%` into the Claude package folder. Two effects: (1) uv's managed Python breaks with `Missing expected target directory for Python minor version link`; set `$env:UV_PYTHON_INSTALL_DIR = "C:\Users\Admin\.uv-python"` before any `uv` command. (2) App data would land in the redirected folder; set `$env:RELIGHT_DATA_DIR = "C:\Users\Admin\Downloads\DopeLight\.data"` when running the app, backend, bench, e2e, or ui-smoke from a Claude shell. All four models (3.9 GB) are already downloaded there. A normal user terminal needs neither.
-- uv is not on PATH in Claude shells: `%LOCALAPPDATA%\Microsoft\WinGet\Packages\astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe\uv.exe`.
+- On the target PC the sandbox problem above did not show up: `npm run setup` and `npm run check` ran from a Claude shell on 2026-10-07 with no extra environment variables. Running backend, bench, or e2e from a Claude shell there is untested.
+- uv is not on PATH in Claude shells on the build machine: `%LOCALAPPDATA%\Microsoft\WinGet\Packages\astral-sh.uv_Microsoft.Winget.Source_8wekyb3d8bbwe\uv.exe`.
 - Background commands from Claude are killed after 10 minutes; start long jobs (bench, big downloads) with `Start-Process` and poll the log.
 - StableNormal turbo needs ~7 GB RAM on CPU; with 16 GB and other apps open this machine swaps.
 - `gh` (GitHub CLI) is not installed; needed in Phase 6 or the user creates the repo by hand.
