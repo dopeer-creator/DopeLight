@@ -1,0 +1,17 @@
+{
+  "name": "relight-workspace",
+  "private": true,
+  "description": "Convenience scripts; the Electron app lives in app/, the Python backend in backend/",
+  "scripts": {
+    "setup": "npm --prefix app install && node scripts/setup-backend.mjs",
+    "dev": "npm --prefix app run dev",
+    "build": "npm --prefix app run build",
+    "typecheck": "npm --prefix app run typecheck",
+    "test:backend": "node scripts/uv.mjs run --no-sync --directory backend pytest -q",
+    "lint:backend": "node scripts/uv.mjs run --no-sync --directory backend ruff check . && node scripts/uv.mjs run --no-sync --directory backend mypy",
+    "check": "npm run typecheck && npm run lint:backend && npm run test:backend",
+    "samples": "node scripts/fetch-samples.mjs",
+    "bench": "node scripts/uv.mjs run --no-sync --directory backend python -m relight_backend.bench --images ../samples --out ../bench-out",
+    "e2e": "node scripts/uv.mjs run --no-sync --directory backend python ../scripts/e2e_backend.py ../samples/portrait.jpg"
+  }
+}

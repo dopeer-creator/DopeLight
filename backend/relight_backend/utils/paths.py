@@ -1,0 +1,34 @@
+"""Locations for app data that lives outside the install folder."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+from relight_backend.constants import APP_NAME, DATA_DIR_ENV
+
+
+def _ensure(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def app_data_dir() -> Path:
+    """Return the data root: $RELIGHT_DATA_DIR if set, else %APPDATA%/<APP_NAME>."""
+    override = os.environ.get(DATA_DIR_ENV)
+    if override:
+        return _ensure(Path(override))
+    base = os.environ.get("APPDATA") or str(Path.home() / ".local" / "share")
+    return _ensure(Path(base) / APP_NAME)
+
+
+def logs_dir() -> Path:
+    return _ensure(app_data_dir() / "logs")
+
+
+def models_dir() -> Path:
+    return _ensure(app_data_dir() / "models")
+
+
+def sessions_dir() -> Path:
+    return _ensure(app_data_dir() / "sessions")

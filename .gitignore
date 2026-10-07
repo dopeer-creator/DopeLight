@@ -1,0 +1,30 @@
+# Node / Electron
+node_modules/
+app/out/
+app/dist/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Never commit weights or user images
+*.safetensors
+*.ckpt
+*.pth
+*.onnx
+samples/private/
+
+# OS / editors
+Thumbs.db
+.DS_Store
+.vscode/
+*.log
+
+# Benchmark photos (fetched by scripts/fetch-samples.mjs) and local data
+samples/
+.data/
+bench-out/
