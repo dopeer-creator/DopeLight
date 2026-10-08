@@ -1,0 +1,1 @@
+{"globals":{"ambient":0,"exposure":0,"keepOriginalLight":0.3},"lights":[{"id":"a","name":"Back light","enabled":true,"type":"point","position":{"x":0.5,"y":0.36,"z":0.1},"target":{"x":0.5,"y":0.5},"color":[1,0.7,0.4],"intensity":3.2,"diffusion":0.6,"radius":0.7,"specular":0.2,"shininess":32,"coneAngle":50,"coneSoftness":0.5,"castShadows":true,"shadowStrength":0.9}]}

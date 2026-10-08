@@ -26,7 +26,7 @@
 
 1. `git pull`, then `npm run setup` (dependencies may have changed), then `npm run check`.
 2. Check the git identity before any commit: `git config user.name` and `git config user.email` in this repo must be `Pratham` / `139778459+Prathamgit9@users.noreply.github.com`. Set them repo-locally if not.
-3. Ask the user to put his fighter photo at `samples/fighter.jpg` (it is not in git; `samples/` is ignored). Any of his own photos will also do.
+3. Get test photos. Nothing is copied between the PCs by hand; GitHub is the only link. `npm run samples` downloads four free photos into `samples/` (portrait, product, interior, landscape). The fighter photo and the user's reference pictures are other people's images and the repository is public, so they are **not in git** unless the user has since said to publish them (then they are in `handoff/`). If they are not there, ask him to paste the fighter photo into the chat and save it as `samples/fighter.jpg`. Lighting setups to try are in `docs/scenes/` (they work on any photo; the fighter one was placed for that picture).
 4. Run the first-ever photoreal render on the GPU, at full default size:
 
    ```
