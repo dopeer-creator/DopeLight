@@ -3,6 +3,7 @@ import { ImagePlus } from 'lucide-react'
 import { APP_NAME } from '@shared/constants'
 import type { GlobalSettings, Light } from '@shared/lighting'
 import { CanvasView } from './components/CanvasView'
+import { ExportDialog } from './components/ExportDialog'
 import { LightsPanel } from './components/LightsPanel'
 import { StatusBar } from './components/StatusBar'
 import { Toolbar } from './components/Toolbar'
@@ -143,6 +144,7 @@ export function App(): React.JSX.Element {
         {ready && <LightsPanel />}
       </div>
       <StatusBar />
+      <ExportDialog />
     </div>
   )
 }

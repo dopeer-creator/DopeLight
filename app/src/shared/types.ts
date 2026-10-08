@@ -51,6 +51,8 @@ export interface JobEvent {
   error?: string
   download_done_mb?: number
   download_total_mb?: number
+  /** On `done`: what the job returned (an export lists the files it wrote). */
+  result?: { files?: string[] }
 }
 
 /** Development helpers (see app/src/main/dev.ts). */
@@ -76,6 +78,10 @@ export interface RelightApi {
   getBackend: () => Promise<BackendInfo>
   /** Returns an unsubscribe function. */
   onBackendChange: (callback: (info: BackendInfo) => void) => () => void
+  /** Ask where to save. `extension` without the dot. Resolves to the full path, or null if cancelled. */
+  chooseExportPath: (defaultName: string, extension: string) => Promise<string | null>
+  /** Open the folder of a file in Explorer, with the file selected. */
+  revealFile: (path: string) => void
   dev: {
     automation: () => Promise<Automation>
     /** Tells the main process the opened image is drawn (for screenshots). */
@@ -89,6 +95,8 @@ export interface RelightApi {
 export const IPC = {
   backendGet: 'backend:get',
   backendChanged: 'backend:changed',
+  exportChoosePath: 'export:choosePath',
+  exportReveal: 'export:reveal',
   devAutomation: 'dev:automation',
   devReady: 'dev:ready',
   parityLoad: 'parity:load',

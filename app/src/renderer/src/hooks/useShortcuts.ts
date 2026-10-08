@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { useExportStore } from '../stores/exportStore'
 import { useLightsStore } from '../stores/lightsStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useViewStore } from '../stores/viewStore'
@@ -18,7 +19,7 @@ function inControl(target: EventTarget | null): boolean {
   return target instanceof HTMLElement && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)
 }
 
-/** Keyboard shortcuts: L, Del, C (hold), Ctrl+Z / Ctrl+Y, Ctrl+O, arrow keys. */
+/** Keyboard shortcuts: L, Del, C (hold), Ctrl+Z / Ctrl+Y, Ctrl+O, Ctrl+E, Esc, arrow keys. */
 export function useShortcuts(onOpen: () => void): void {
   useEffect(() => {
     const down = (event: KeyboardEvent): void => {
@@ -29,6 +30,9 @@ export function useShortcuts(onOpen: () => void): void {
         if (key === 'o') {
           event.preventDefault()
           onOpen()
+        } else if (key === 'e') {
+          event.preventDefault()
+          useExportStore.getState().show()
         } else if (key === 'z' && !event.shiftKey) {
           event.preventDefault()
           lights.undo()
@@ -38,6 +42,9 @@ export function useShortcuts(onOpen: () => void): void {
         }
         return
       }
+      if (key === 'escape') useExportStore.getState().hide()
+      // While the export dialog is open, the picture's shortcuts are off.
+      if (useExportStore.getState().open) return
       if (inControl(event.target) || useSessionStore.getState().status !== 'ready') return
 
       if (key === 'c') {

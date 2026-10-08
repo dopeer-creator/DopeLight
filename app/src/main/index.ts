@@ -4,6 +4,7 @@ import { APP_NAME } from '@shared/constants'
 import { IPC } from '@shared/types'
 import { BackendProcess } from './backend'
 import { attachDevHelpers, parityFolder, registerDevHandlers } from './dev'
+import { registerExportHandlers } from './exportDialog'
 import { log } from './logger'
 
 app.setName(APP_NAME)
@@ -44,6 +45,12 @@ function createWindow(): BrowserWindow {
     }
   })
 
+  // A page that loads twice or a renderer that dies should be visible in the log.
+  window.webContents.on('did-finish-load', () => log('INFO', 'main', 'page loaded'))
+  window.webContents.on('render-process-gone', (_event, details) => {
+    log('ERROR', 'main', `renderer process gone: ${details.reason} (exit code ${details.exitCode})`)
+  })
+
   const hash = parityRun ? 'parity' : ''
   const devUrl = process.env['ELECTRON_RENDERER_URL']
   if (!app.isPackaged && devUrl) void window.loadURL(`${devUrl}#${hash}`)
@@ -70,6 +77,7 @@ if (!parityRun && !app.requestSingleInstanceLock()) {
         window.webContents.send(IPC.backendChanged, info)
       }
     })
+    registerExportHandlers()
     registerDevHandlers()
 
     attachDevHelpers(createWindow())

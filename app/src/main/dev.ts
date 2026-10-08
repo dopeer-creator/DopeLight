@@ -16,11 +16,16 @@ import { log } from './logger'
  *                                  scene; the result goes to the log as "BENCH ..."
  *   RELIGHT_SCRIPT=<file.js>       run this JavaScript in the page once the image is drawn
  *   RELIGHT_SCRIPT_OUT=<file.json> write the script's result here, then quit
+ *   RELIGHT_EXPORT_DIR=<folder>    exports save here without showing the save dialog
  *   RELIGHT_PARITY=<folder>        render the folder's fixture with the real
  *                                  shader, write the pixels there, and quit
  */
 
 const env = (name: string): string | undefined => (app.isPackaged ? undefined : process.env[name])
+
+export function exportFolder(): string | undefined {
+  return env('RELIGHT_EXPORT_DIR')
+}
 
 export function parityFolder(): string | undefined {
   return env('RELIGHT_PARITY')
@@ -38,6 +43,10 @@ function automation(): Automation {
 }
 
 function capture(window: BrowserWindow, target: string): void {
+  // A covered window or a sleeping display stops painting, and the capture would
+  // be an old frame. Ask for a fresh one first.
+  window.webContents.setBackgroundThrottling(false)
+  window.webContents.invalidate()
   void window.webContents.capturePage().then((image) => {
     writeFileSync(target, image.toPNG())
     log('INFO', 'main', `screenshot saved to ${target}`)

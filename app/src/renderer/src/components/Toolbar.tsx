@@ -1,4 +1,5 @@
-import { Columns2, Eye, FolderOpen, Redo2, Undo2 } from 'lucide-react'
+import { Columns2, Download, Eye, FolderOpen, Redo2, Undo2 } from 'lucide-react'
+import { useExportStore } from '../stores/exportStore'
 import { useLightsStore } from '../stores/lightsStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useViewStore } from '../stores/viewStore'
@@ -51,6 +52,15 @@ export function Toolbar({ onOpen }: { onOpen: () => void }): React.JSX.Element {
         >
           <Columns2 size={15} />
           Split
+        </button>
+        <button
+          className="button"
+          title="Export the relit image or light layers (Ctrl+E)"
+          disabled={!ready}
+          onClick={useExportStore.getState().show}
+        >
+          <Download size={15} />
+          Export
         </button>
       </div>
     </header>

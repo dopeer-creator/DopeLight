@@ -8,6 +8,9 @@ const api: RelightApi = {
     ipcRenderer.on(IPC.backendChanged, listener)
     return () => ipcRenderer.removeListener(IPC.backendChanged, listener)
   },
+  chooseExportPath: (defaultName, extension) =>
+    ipcRenderer.invoke(IPC.exportChoosePath, defaultName, extension),
+  revealFile: (path) => ipcRenderer.send(IPC.exportReveal, path),
   dev: {
     automation: () => ipcRenderer.invoke(IPC.devAutomation),
     ready: () => ipcRenderer.send(IPC.devReady),
