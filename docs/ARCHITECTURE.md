@@ -37,6 +37,7 @@ All require `Authorization: Bearer <token>`.
 | `POST /session` | multipart `file` plus optional form field `normals` (`dsine`, `stablenormal`, `depth`); stores the image and starts preprocess; returns `session_id`, `job_id`, map URLs. If the maps are already cached: `cached: true`, no job |
 | `GET /session/{id}` | sizes, normals method, and per-model time/VRAM stats of a finished session |
 | `GET /session/{id}/{map}` | PNG; map is `albedo_proxy`, `normal`, `depth`, or `mask` |
+| `GET /session/{id}/depth_raw` | depth as raw little-endian uint16, row by row at working size. The preview uses this: browsers decode 16-bit PNGs to 8 bits, which would band the heightfield |
 | `GET /jobs/{id}` | job state, result, or error |
 | `GET /jobs/{id}/events` | server-sent events: every progress event so far, then live ones until the job ends |
 | `POST /jobs/{id}/cancel` | cancel; takes effect at the next stage boundary, or immediately during a download |
@@ -147,6 +148,79 @@ Axis check (correlation with depth-derived normals) was positive on x, y, and z 
 
 **Depth-derived stays as a setting**: needs no download and no time, and is the fallback if a normals model cannot run.
 
-## Decisions still to come
+## Live preview (Phase 2)
 
-- Phase 2: raw WebGL2 vs Three.js for the live preview shader.
+The picture is drawn by one WebGL2 fragment shader on a full-screen triangle (`app/src/renderer/src/gl/shader.ts`, driven by `gl/renderer.ts`). Raw WebGL2, not Three.js: one triangle and one shader need no scene graph. The three maps are uploaded once per image; after that sliders and dragging only change uniforms.
+
+`backend/relight_backend/pipeline/shading.py` computes the same picture in PyTorch. It exists for the export and photoreal phases, and as the reference the shader is tested against.
+
+### Lighting model
+
+Space: `x = u`, `y = (1 − v) × aspect` (up), `z = DEPTH_SCALE × depth` (toward the viewer), all in image-width units. Colour math is in linear light: the albedo texture is an sRGB texture (the GPU linearizes on sampling) and the result is encoded back to sRGB at the end.
+
+Per light, with `N` the normal, `L` the unit vector to the light, `V = (0, 0, 1)`:
+
+| Term | Formula |
+| --- | --- |
+| diffuse | `clamp((N·L + w) / (1 + w), 0, 1)`, `w = diffusion` (wrap lighting; 1 = half-Lambert) |
+| falloff (point, spot) | `1 / (1 + (d / r)²)`, `r = radius × (1 + diffusion)` |
+| cone (spot) | `smoothstep(cos(angle/2), cos(angle/2 × (1 − softness)), −L·dir)` |
+| specular | Blinn-Phong: `specular × (N·H)^shininess`, faded out as `N·L` drops below 0.1 |
+| shadow | march from the pixel toward the light over the depth heightfield (24 steps, at most 48), jittered per pixel; the deepest overlap divided by a penumbra width (0.012 to 0.08, growing with diffusion) is the occlusion |
+| contribution | `colour × intensity × falloff × cone × shadow × (albedo × diffuse + specular)` |
+
+Composite: `albedo × (keepOriginalLight + ambient) + Σ contributions`, times `2^exposure`, then a soft clip (unchanged below 0.8, a tanh roll-off above that never passes 1), then sRGB. With no lights and default settings the picture is the original, except that highlights above 0.8 linear are rolled off slightly.
+
+Where this departs from the brief's wording:
+
+- **Aim point instead of a direction vector.** Spot and directional lights store a `target` (x, y on the image); the direction is from the light to that point at half the relief height. It gives one draggable handle instead of a 3-D direction widget.
+- **Depth of a light** (`z`; the brief calls it height) is measured from the image plane (`z = 0`, the farthest depth) toward the viewer. The photo's relief reaches up to `z = 0.4`, so a light with a lower `z` than the surface under it is **behind** that surface. The gizmo turns dashed and the panel says so.
+- **Ambient and "original light" add up** to one base factor, because the albedo is still the photo itself (v1 has no intrinsic decomposition). They become different once a real albedo exists.
+- **Preview sharpness** is limited by the working size (long edge 1536 px): the albedo texture is the albedo proxy, not the full-resolution file. Full resolution is for export (Phase 3).
+
+### Lights behind the surface
+
+A depth map only describes the visible front of things. Shadows normally treat every shape as a solid reaching all the way back, which is the safe guess for a light in front. A light placed behind a shape would then be buried inside a solid and light nothing.
+
+So each light gets an *embed* value: the surface height at the light's own spot minus the light's `z` (for a directional light: +1000 if it shines from the back, −1000 otherwise). When it is positive the light is behind the surface, and for that light:
+
+- shapes count as **shells** at most 0.15 thick (and never thicker than 70 % of the embed depth, so the light itself stays outside the shell);
+- a ray is blocked only while it is inside a shell. Light can travel in the gap between a subject and the backdrop, so the backdrop glows around the subject, the subject's front stays dark, and edges facing the light get a rim;
+- thickness is counted from the shape's top nearby (a small max filter of the depth map, stored in the depth texture's second channel), not from the steep wall every outline has in a depth map. Without that a ray passing under a shape always hit the wall.
+
+The switch from solid to shell fades in over the first 0.03 of embed depth. This is still a relief, not a 3-D model: there is no far side of anything, and the camera cannot move.
+
+The shader's numbers come from `SHADING` in `app/src/shared/lighting.ts`; `shading.py` holds the same values and `backend/tests/test_shading.py` fails if they drift apart.
+
+### Parity test
+
+`npm run parity` builds a synthetic scene (sloped floor, dome, box), has Electron render 19 light setups with the real shader off screen, renders the same with `shading.py`, and compares the 8-bit results. Limits: mean difference at most 0.5 levels and at most 0.5 % of pixels off by more than 3 levels. Measured on the build laptop (Intel Iris Xe, 2026-10-08): **every scene within 1 level of 255, mean 0.05 to 0.09**, including shadows with jitter, lights behind the surface, and eight mixed lights. Side-by-side images land in `parity-out/`.
+
+### Speed
+
+The shader's cost is per output pixel, so the preview renders at the size the picture is shown at (times the display's pixel ratio), never at the image's full size. While dragging, if a full-quality frame takes longer than 14 ms, frames are drawn at a lower resolution (down to 40 % per side) and the picture sharpens again 250 ms after the last change. The status bar shows the full-quality frame time.
+
+Measured with `RELIGHT_BENCH=1` on the build laptop (Intel Iris Xe integrated graphics, portrait sample):
+
+| Scene | 1920×1080 | 3840×2160 |
+| --- | --- | --- |
+| 1 light, no shadows | 4.5 ms (223 fps) | 8.8 ms (114 fps) |
+| 3 lights, 2 with shadows | 15.1 ms (66 fps) | 51.5 ms (19 fps) |
+| 8 lights, all with shadows | 47.3 ms (21 fps) | 153.3 ms (7 fps) |
+
+**Not yet measured on the RTX 4050.** Shadows dominate the cost (24 depth samples per shadowed light per pixel).
+
+### Interaction
+
+State lives in three Zustand stores: `sessionStore` (open image, maps, progress), `lightsStore` (lights, scene settings, selection, undo history), `viewStore` (compare, split). Undo works by checkpoints: a snapshot is saved at the start of each gesture (pointer down on a gizmo or slider, a key press, a button), so one drag is one undo step.
+
+`npm run ui-smoke` starts the real app, opens a sample, and runs `scripts/ui-smoke.browser.js` inside the page: it drags a gizmo, turns the wheel, presses the shortcuts, moves a slider, and checks the app's state after each (22 checks).
+
+Development helpers are environment variables read by `app/src/main/dev.ts` (`RELIGHT_OPEN`, `RELIGHT_SCENE`, `RELIGHT_SCREENSHOT`, `RELIGHT_BENCH`, `RELIGHT_SCRIPT`, `RELIGHT_PARITY`); none work in a packaged app.
+
+### Known limits
+
+- In pure-black parts of a photo the estimated normals are noise, so lights draw blotchy patterns there.
+- Shadows come from a heightfield seen from one side: there is nothing behind the visible surface, and depth edges cast hard-edged shadows.
+- With a light behind the surface, the lit backdrop can show a fine dotted pattern (the per-pixel jitter of the shadow samples against the hard shell edge).
+- A lost WebGL context is not recovered; the app would need a restart.
