@@ -3,7 +3,7 @@
 //   npm run ui-smoke
 // Needs the sample photos (npm run samples) and the models (first open downloads them).
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -11,7 +11,8 @@ import { fileURLToPath } from 'node:url'
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const image = join(root, 'samples', 'portrait.jpg')
 const out = join(tmpdir(), `relight-ui-smoke-${process.pid}.json`)
-const TIMEOUT_MS = 10 * 60 * 1000 // first run may download models and preprocess on CPU
+const exportDir = mkdtempSync(join(tmpdir(), 'relight-ui-smoke-export-'))
+const TIMEOUT_MS = 15 * 60 * 1000 // first run may download models and preprocess on CPU
 
 if (!existsSync(image)) {
   console.error('Missing samples/portrait.jpg. Run: npm run samples')
@@ -26,7 +27,8 @@ const child = spawn('npm run dev', {
     ...process.env,
     RELIGHT_OPEN: image,
     RELIGHT_SCRIPT: join(root, 'scripts', 'ui-smoke.browser.js'),
-    RELIGHT_SCRIPT_OUT: out
+    RELIGHT_SCRIPT_OUT: out,
+    RELIGHT_EXPORT_DIR: exportDir
   }
 })
 
@@ -47,9 +49,21 @@ function finish(result) {
   }
 
   if (result.error) {
+    rmSync(exportDir, { recursive: true, force: true })
     console.error(`UI smoke test could not run: ${result.error}`)
     process.exit(1)
   }
+  // The export check is only real if the file is on disk.
+  for (const file of result.files ?? []) {
+    const size = existsSync(file) ? statSync(file).size : 0
+    result.checks.push({
+      name: 'exported file exists on disk',
+      ok: size > 1000,
+      detail: `${(size / 1e6).toFixed(1)} MB`
+    })
+  }
+  rmSync(exportDir, { recursive: true, force: true })
+
   let failed = 0
   for (const { name, ok, detail } of result.checks) {
     if (!ok) failed++

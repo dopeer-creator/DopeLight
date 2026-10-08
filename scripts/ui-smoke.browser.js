@@ -110,5 +110,30 @@
   const unlit = await snap()
   check('turning the light off changes the picture', lit !== unlit && lit.length > 5000)
 
-  return { checks }
+  // --- export: Ctrl+E, pick "Light layer", run a real full-size export -----------------
+  const exports = window.__relight.exports
+  lights.getState().updateLight(lights.getState().lights[0].id, { enabled: true })
+  press('e', { ctrlKey: true })
+  await frame()
+  check('Ctrl+E opens the export dialog', exports.getState().open && document.querySelector('.dialog') !== null)
+  press('l')
+  check('picture shortcuts are off while the dialog is open', lights.getState().lights.length === 1)
+  document.querySelectorAll('.choice input')[1].click() // Light layer
+  await frame()
+  check('choosing Light layer shows the blend target', exports.getState().options.kind === 'light_layer' && document.querySelectorAll('.dialog select').length === 2)
+  ;[...document.querySelectorAll('.dialog .button')].find((b) => b.textContent.includes('Export')).click()
+  // The save dialog is skipped in this test (RELIGHT_EXPORT_DIR); wait for the job.
+  const started = performance.now()
+  await new Promise((resolve) => setTimeout(resolve, 500))
+  while (exports.getState().running && performance.now() - started < 8 * 60 * 1000) {
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  const exported = exports.getState()
+  const seconds = Math.round((performance.now() - started) / 1000)
+  check('export finishes without error', !exported.running && exported.error === null, exported.error ?? `${seconds} s`)
+  check('export reports one file', exported.files.length === 1, exported.files.join(', '))
+  press('Escape')
+  check('Esc closes the dialog', exports.getState().open === false)
+
+  return { checks, files: exported.files }
 })()
