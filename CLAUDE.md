@@ -20,6 +20,10 @@
 
 ## Where things stand
 
+**Newest note (2026-10-08, laptop, session cut short by a usage limit):** The user rejected any "let the AI redraw" control. **His pixels must stay; the light on them must be crisp and accurate, like Photoshop's Relight.** The ChatGPT picture he sent is a reference for crispness only. Proposal A below is dropped; B (light shaft), C (prompt from the lights), D (judge at real size on the RTX 4050) still stand.
+
+Started on crispness: `photoreal.add_preview_detail` splits the light in two. The broad light (where it falls, how it fades) stays the model's; the fine light (the edge along a muscle, a fold, a rim) comes from the preview shaded at the full working size. The saved ratio is now at working size, not diffusion size. Unit tests pass (78). **Not yet looked at on a real photo**: next step is to render `samples/fighter.jpg` (scene: yellow overhead spot + red trim spot from the right) and judge the picture; `DETAIL_LIMIT` (2.5) and the preview's rough cast shadows are the things to watch, since they now show up sharp.
+
 *Last updated: 2026-10-08, from the laptop.*
 
 **Phases 0 to 4 are built. The work is paused at the end of Phase 4, waiting for the user's test and his "go" for Phase 5.**

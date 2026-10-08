@@ -150,6 +150,22 @@ def test_light_the_model_adds_on_its_own_keeps_the_models_colour() -> None:
     assert ratio[0] > 1.2 > 0.9 > ratio[2]  # still warm, not grey
 
 
+def test_fine_light_comes_from_the_full_size_preview() -> None:
+    rng = np.random.default_rng(3)
+    original = rng.uniform(0.3, 0.6, (64, 96, 3)).astype(np.float32)
+    # The preview lights the left half, with a hard edge: fine detail a small ratio cannot hold.
+    hint = original.copy()
+    hint[:, :48] = np.clip(hint[:, :48] * 1.5, 0, 1)
+    small_original = photoreal._resize(original, (24, 16))
+    small_hint = photoreal._resize(hint, (24, 16))
+    preview_low = photoreal.smoothed_preview_ratio(small_original, small_hint)
+    # A model that agrees with the preview: the sharpened result is the exact, crisp preview.
+    sharp = photoreal.add_preview_detail(preview_low, preview_low, original, hint)
+    exact = photoreal._raw_ratio(photoreal._linear(original), photoreal._linear(hint))
+    assert np.abs(sharp - exact).max() < 0.02
+    assert sharp[32, 46, 0] - sharp[32, 50, 0] > 1.0  # the edge is one pixel sharp, not a ramp
+
+
 def test_ratio_transfer_keeps_the_originals_detail() -> None:
     rng = np.random.default_rng(2)
     full = rng.uniform(0.2, 0.6, (128, 192, 3)).astype(np.float32)  # fine texture
@@ -206,8 +222,8 @@ def test_render_writes_ratio_and_preview(session: Any) -> None:
     assert folder is not None and result["diffusion_size"] == [128, 64]
 
     ratio = np.load(folder / photoreal.RATIO_FILE)
-    assert ratio.shape == (64, 128, 3)
-    assert ratio[:, :40].mean() > 2.0 and abs(ratio[:, 90:].mean() - 1.0) < 0.05
+    assert ratio.shape == (32, 48, 3)  # kept at the working size, where the fine light is exact
+    assert ratio[:, :15].mean() > 1.5 > ratio[:, 34:].mean()  # the model brightened the left
 
     preview = np.asarray(Image.open(folder / photoreal.PREVIEW_FILE), dtype=int)
     assert preview.shape[:2] == original.shape[:2]  # small photo: shown at its own size

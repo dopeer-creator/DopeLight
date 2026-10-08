@@ -67,6 +67,7 @@ GUIDED_EPSILON = 0.01
 COLOUR_LIMIT = 1.5  # a channel may change at most this much more (or less) than brightness
 COLOUR_SIGMA = 0.04  # blur of the colour change, as a fraction of the width
 SUBJECT_FEATHER = 0.006  # softening of the subject mask's edge, as a fraction of the width
+DETAIL_LIMIT = 2.5  # bound on the fine light taken from the full-size preview
 BRIGHTNESS_LEASH = 2.5  # how far the model's brightness may depart from the preview's
 MODEL_COLOUR_LIMIT = 3.0  # bound on the model's own colour, where it is used at all
 # The user's lights own the colour where they supply this share of the brightness or more.
@@ -220,6 +221,38 @@ def lighting_ratio(
     return np.asarray(np.clip(ratio, RATIO_MIN, RATIO_MAX), dtype=np.float32)
 
 
+def smoothed_preview_ratio(original: FloatArray, hint: FloatArray) -> FloatArray:
+    """The preview's light as lighting_ratio sees it: both pictures smoothed, then divided."""
+    original_linear = _linear(original)
+    guide = np.asarray(original_linear @ _LUMA, dtype=np.float32)
+    radius = max(1, round(original.shape[1] * GUIDED_RADIUS))
+    base = np.maximum(guided_filter(guide, original_linear, radius, GUIDED_EPSILON), 0.0)
+    lights = np.maximum(guided_filter(guide, _linear(hint), radius, GUIDED_EPSILON), 0.0)
+    return _raw_ratio(base, lights)
+
+
+def add_preview_detail(
+    ratio: FloatArray, preview_low: FloatArray, original_full: FloatArray, hint_full: FloatArray
+) -> FloatArray:
+    """Sharpen a low-resolution ratio with the fine light of the full-size preview.
+
+    The diffusion model works small, and its light is smoothed on top, so by
+    itself the result is soft. The preview shading is exact per pixel at the
+    working size: the edge of light along a muscle, a fold, a rim. So the light
+    is split in two: the broad part (where it falls, how it fades) stays the
+    model's; the fine part is the preview's, as the factor between the exact
+    full-size preview ratio and its own smoothed low-resolution version.
+
+    Where the model agrees with the preview, the result is the crisp preview.
+    """
+    height, width = original_full.shape[:2]
+    exact = _raw_ratio(_linear(original_full), _linear(hint_full))
+    fine = exact / np.maximum(_resize(preview_low, (width, height)), 1e-3)
+    fine = np.clip(fine, 1.0 / DETAIL_LIMIT, DETAIL_LIMIT)
+    sharp = _resize(ratio, (width, height)) * fine
+    return np.asarray(np.clip(sharp, RATIO_MIN, RATIO_MAX), dtype=np.float32)
+
+
 def apply_ratio(original: FloatArray, ratio: FloatArray) -> FloatArray:
     """Full-size relit image (linear light, 0..1) from the original (sRGB floats) and a ratio.
 
@@ -339,6 +372,16 @@ def render(
     base_level = (settings.keep_original_light + settings.ambient) * 2.0**settings.exposure
     ratio = lighting_ratio(small, np.asarray(relit, dtype=np.float32) / 255.0, hint_small,
                            subject, base_level)
+    # Crisp light: the fine detail comes from the preview shaded at the full working size.
+    reporter.report("transfer", 0.95, "Sharpening the light")
+    working_photo, working_hint = make_hint(
+        folder, meta.normals_method, (working_width, working_height), lights, settings
+    )
+    ratio = add_preview_detail(
+        ratio, smoothed_preview_ratio(small, hint_small),
+        np.asarray(working_photo, dtype=np.float32) / 255.0,
+        np.asarray(working_hint, dtype=np.float32) / 255.0,
+    )
 
     render_id = uuid.uuid4().hex[:12]
     out = folder / "renders" / render_id
