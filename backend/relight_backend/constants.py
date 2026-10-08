@@ -1,6 +1,8 @@
 """Single place for the app name and other fixed values."""
 
-APP_NAME = "Relight"
+APP_NAME = "Dope Light"
+# Earlier names. A data folder under one of them is taken over (see utils/paths.py).
+LEGACY_APP_NAMES = ("Relight",)
 APP_VERSION = "0.1.0"
 
 HOST = "127.0.0.1"

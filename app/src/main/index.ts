@@ -6,8 +6,10 @@ import { BackendProcess } from './backend'
 import { attachDevHelpers, parityFolder, registerDevHandlers } from './dev'
 import { registerExportHandlers } from './exportDialog'
 import { log } from './logger'
+import { migrateDataFolder } from './migrate'
 
 app.setName(APP_NAME)
+migrateDataFolder()
 
 const backend = new BackendProcess()
 /** Parity runs render a fixture with the shader and quit; no backend, no visible window. */
@@ -21,7 +23,8 @@ function createWindow(): BrowserWindow {
     minHeight: 600,
     show: false,
     title: APP_NAME,
-    backgroundColor: '#0d0e12',
+    backgroundColor: '#0f0d0b',
+    icon: join(__dirname, '../../resources/icon.png'),
     autoHideMenuBar: true,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

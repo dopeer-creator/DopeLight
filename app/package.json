@@ -1,7 +1,7 @@
 {
-  "name": "relight",
+  "name": "dope-light",
   "version": "0.1.0",
-  "description": "Local image relighting desktop app",
+  "description": "Dope Light: local image relighting desktop app",
   "private": true,
   "main": "./out/main/index.js",
   "scripts": {
@@ -30,5 +30,6 @@
   "allowScripts": {
     "esbuild@0.25.12": true,
     "esbuild@0.28.2": true
-  }
+  },
+  "productName": "Dope Light"
 }

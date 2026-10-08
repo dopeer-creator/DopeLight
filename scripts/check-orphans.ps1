@@ -1,5 +1,5 @@
 # Lists Relight processes still running. Run after closing or killing the app;
-# expected output is "No Relight processes running."
+# expected output is "No Dope Light processes running."
 # Matches the backend by its module name and Electron by this repo's folder.
 $repo = [regex]::Escape((Split-Path $PSScriptRoot -Parent))
 $left = Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='electron.exe' OR Name='Relight.exe'" |
@@ -10,4 +10,4 @@ if ($left) {
   exit 1
 }
 
-"No Relight processes running."
+"No Dope Light processes running."
