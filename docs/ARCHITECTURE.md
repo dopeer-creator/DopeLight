@@ -111,20 +111,32 @@ The ratio is measured as `(relit + e) / (original + e)` with `e = 0.03`, scaled 
 
 **Crisp light (2026-10-08).** The ratio above is measured at diffusion size from smoothed pictures, so by itself it is soft. `add_preview_detail` puts the fine light back: the preview is shaded once more at the full working size, its exact per-pixel ratio is divided by its own smoothed, diffusion-size version, and that factor (bounded to 2.5 times either way, `DETAIL_LIMIT`) multiplies the model's ratio. Where the model agrees with the preview, the result is the preview's exact light; the model changes only the broad light. The user asked for this: no redrawing, crisp and accurate light. Seen on the first test (dark studio photo, laptop CPU): light edges along muscles are sharp, but the preview's flaws show sharp too: the hard edge of a spotlight cone on a wall, and the dotted edge of a ray-marched cast shadow.
 
-**Memory and failure.** On the GPU: half precision, attention slicing, VAE tiling, model CPU offload. On out-of-memory it retries at 0.8 and 0.64 of the size with sequential offload, and says so in the result. Without a GPU the diffusion size is capped at 512 px, also noted. Cancel is checked at every denoising step.
+**Memory and failure.** On the GPU: half precision, VAE tiling, model CPU offload. Attention is left to PyTorch's own kernel; attention slicing (used at first) builds the attention matrix in pieces, which filled the 6 GB card at the high-resolution size. On out-of-memory it retries at 0.8 and 0.64 of the size with attention slicing and sequential offload, and says so in the result. Without a GPU the diffusion size is capped at 512 px, also noted. Cancel is checked at every denoising step.
 
 **Stored per render** in `<session>/renders/<id>/`: `ratio.npy` (half float, working size; exports are rebuilt from it at any bit depth), `preview.jpg` for the app, and `hint.jpg` and `diffusion.jpg` (the start picture and the raw model output) for inspection.
 
 **Exports** (`export_photoreal`): the relit image; a light layer `encode(relit) − encode(original)` (or the linear form), which cannot hold the shadows the render added; and a **multiply layer**: the ratio itself, stored so that 0.5 means no change, for the Multiply blend in a linear (32-bit) document. It holds both brightening (up to 2 times) and shadows.
 
-**Measured on the build laptop (CPU, no GPU), 2026-10-08, portrait sample:** 384 × 448, 12 steps, no detail pass: 131 s. Through the app, 384 × 512, 8 steps: 101 s. Judged by eye: skin shading and falloff look natural and clearly better than the preview; the face, name tag, and backdrop stay the original's. **Not yet run on the RTX 4050:** speed, peak VRAM at 768 px with the detail pass, and how half precision looks are unknown.
+**Measured on the RTX 4050 Laptop (6 GB), 2026-10-08.** Default settings: 25 steps, diffusion 512 × 768 then a high-resolution pass at 768 × 1152, half precision, the detail pass on. Times include loading the model.
+
+| Photo | Setting | Time | Peak VRAM (PyTorch's count) |
+| --- | --- | --- | --- |
+| fighter, 407 × 622 | with attention slicing (as first built) | 139 s; 4.6 s per high-resolution step | 4950 MB; `nvidia-smi` showed 5.7 of 6.1 GB in use |
+| fighter, 407 × 622 | without attention slicing (now) | **34 s**; 0.3 s per step, 0.56 s per high-resolution step | **2268 MB** |
+| cameraman, 1000 × 667 (landscape) | now | 34 to 35 s | 2268 MB |
+
+The two fighter results are the same picture (mean difference 0.3 of 255 levels in the raw model output). A render started from the app while another process was also using the card took 144 s; that one is not a clean measurement. What half precision looks like next to the laptop's full-precision CPU render has not been compared side by side.
+
+Judged by eye on the GPU: the result stays close to the preview's own shading, so the preview's faults carry through (see the work list in `CLAUDE.md`). The pass also weakens thin, strongly coloured light: a rim light comes out dimmer and muddier than in the preview, and a blue rim nearly white. Raising `DETAIL_LIMIT` from 2.5 to 8 brought the orange rim back on the one photo tried; it is not changed yet, because it has not been checked for noise on other photos.
+
+**Measured on the build laptop (CPU, no GPU), 2026-10-08, portrait sample:** 384 × 448, 12 steps, no detail pass: 131 s. Through the app, 384 × 512, 8 steps: 101 s. Judged by eye: skin shading and falloff look natural and clearly better than the preview; the face, name tag, and backdrop stay the original's.
 
 **Limits.** Results depend on the seed. The colour of the light always follows the preview, so the model's own colour ideas (a warm bounce, say) are dropped. The background gets the preview's light, not the model's. Low diffusion sizes (as on this laptop) give soft light shapes.
 ## Export (Phase 3)
 
 `pipeline/export.py`, behind `POST /session/{id}/export`. The backend does the rendering, not an off-screen WebGL pass: it has no texture-size limit, writes 16-bit files, and uses the same `shading.py` the shader is checked against.
 
-How it renders: the original file is the albedo at full size; normals and depth are scaled up to it (bilinear); the two maps derived from depth (top-nearby and outline) are made at the working size and scaled up too, as the preview does. Shading runs a strip of about one megapixel of rows at a time, so memory stays bounded; a strip gives exactly the pixels a single pass would (tested). Shadows use 48 steps instead of the preview's 24. If the GPU runs out of memory it retries on the CPU.
+How it renders: the original file is the albedo at full size; normals and depth are scaled up to it (bilinear); the top-nearby map (derived from depth) and the rim map are made at the working size and scaled up too, as the preview does. Shading runs a strip of about one megapixel of rows at a time, so memory stays bounded; a strip gives exactly the pixels a single pass would (tested). Shadows use 48 steps instead of the preview's 24. If the GPU runs out of memory it retries on the CPU.
 
 What it writes (the original keeps its name; exports get a suffix):
 
@@ -227,7 +239,7 @@ Per light, with `N` the normal, `L` the unit vector to the light, `V = (0, 0, 1)
 | cone (spot) | `smoothstep(cos(angle/2), cos(angle/2 × (1 − softness)), −L·dir)` |
 | specular | Blinn-Phong: `specular × (N·H)^shininess`, faded out as `N·L` drops below 0.1 |
 | shadow | march from the pixel toward the light over the depth heightfield (24 steps, at most 48), jittered per pixel; the deepest overlap divided by a penumbra width (0.012 to 0.08, growing with diffusion) is the occlusion |
-| rim | for a light behind the pixel: `1.5 × smoothstep(0, 0.5, −L.z) × outline²`, where `outline` (0..1) marks the near side of depth edges; not shadowed |
+| rim | `1.5 × amount × across³`. The rim map gives each pixel a vector `R` pointing out of the shape it is on, with length `e`: 1 at the outline, 0 a band inside it. `amount = clamp(max(R/e · L.xy, 0) + 0.6 × max(−L.z, 0), 0, 1) × (1 − smoothstep(0, 0.5, L.z))`: the edge faces the light, or the light is behind; nothing from a light in front. `across = clamp((e − (1 − w)) / w, 0, 1)` with `w = mix(0.35, 1, diffusion)`: a softer light gives a broader rim. Not shadowed |
 | contribution | `colour × intensity × falloff × cone × (shadow × (albedo × diffuse + specular) + rim × mix(albedo, white, 0.35))` |
 
 Composite: `albedo × (keepOriginalLight + ambient) + Σ contributions`, times `2^exposure`, then a soft clip (unchanged below 0.8, a tanh roll-off above that never passes 1), then sRGB. With no lights and default settings the picture is the original, except that highlights above 0.8 linear are rolled off slightly.
@@ -252,7 +264,7 @@ The user's first real test (a bright outdoor game screenshot) looked wrong in fo
 
 Later the same day, for the user's coloured-light references: under a light nothing counts as darker than `0.02 × Even light` (`ALBEDO_FLOOR`; first set to 0.06, which let a strong spotlight turn black cloth mid-grey), so a coloured light also shows on dark backgrounds instead of vanishing on black.
 
-Preprocess writes the helper maps: `normal_smooth_<method>.png`, `reach.png` (kept beside the depth), and `aux.png` (red = reach, green = square root of brightness), which the app loads as two more textures. Sessions made before this get them on the next open (the depth model runs again, about 2 s on CPU).
+Preprocess writes the helper maps: `normal_smooth_<method>.png`, `reach.png` (kept beside the depth), and `aux_v2.png` (red = reach, green = square root of brightness, blue and alpha = the rim map; it was `aux.png` with two channels until the rim map was added), which the app loads as two more textures. Sessions made before this get them on the next open (the depth model runs again, about 2 s on CPU).
 
 ### Lights behind the surface
 
@@ -264,7 +276,11 @@ So each light gets an *embed* value: the surface height at the light's own spot 
 - a ray is blocked only while it is inside a shell. Light can travel in the gap between a subject and the backdrop, so the backdrop glows around the subject, the subject's front stays dark, and edges facing the light get a rim;
 - thickness is counted from the shape's top nearby (a small max filter of the depth map, stored in the depth texture's second channel), not from the steep wall every outline has in a depth map. Without that a ray passing under a shape always hit the wall.
 
-**Rim light.** A backlight in a photo shows mostly as a bright outline. The preview draws it from an *outline map*: for each pixel, how far it stands above the lowest depth within 1, 2, 3, and 4 small steps (each 0.15 % of the image width), averaged. That is 1 right at the near side of a depth edge and fades within a few pixels. It is stored in the depth texture's third channel. Lights in front of a pixel add no rim.
+**Rim light (rebuilt 2026-10-08).** A light beside or behind a subject shows as a bright edge on the side that faces it. Estimated surface normals are too flat near an outline to catch that light, so the edge itself is used. Preprocess makes a **rim map** (`shading.rim_field`): for each pixel a vector that points out of the shape, 1 long at the outline and falling to 0 over a band of 2.4 % of the image width. When the photo has a subject (the mask covers 2 to 90 % of it), the outline is the mask's, which follows the visible edge to the pixel, and only the subject gets a rim; the direction is the downhill slope of the blurred mask. With no subject, depth edges are used instead. The map is stored in `aux_v2.png` (blue and alpha, `128 + 127 × value`), so the shader and `shading.py` read the same bytes; the app computes nothing for it.
+
+The first version drew a glow of even strength around every depth edge for any light behind the surface. On a real photo (a cameraman in a studio, the user's test) it read as a sticker outline: the same on all sides whatever the light's position, a few pixels inside the visible outline with a dark line outside it, and also around background objects. The user could not get a rim on a person with it.
+
+What it still is not: a rim that follows the form (broad over a shoulder, thin on hair, broken by folds). It is one smooth band along the mask. Pictures: `handoff/results/2026-10-08-gpu-pc/`.
 
 The switch from solid to shell fades in over the first 0.03 of embed depth. This is still a relief, not a 3-D model: there is no far side of anything, and the camera cannot move.
 
@@ -272,7 +288,7 @@ The shader's numbers come from `SHADING` in `app/src/shared/lighting.ts`; `shadi
 
 ### Parity test
 
-`npm run parity` builds a synthetic scene (sloped floor, dome, box), has Electron render 21 light setups with the real shader off screen, renders the same with `shading.py`, and compares the 8-bit results. Limits: mean difference at most 0.5 levels and at most 0.5 % of pixels off by more than 3 levels. Measured on the build laptop (Intel Iris Xe, 2026-10-08): **every scene within 1 level of 255, mean 0.05 to 0.09**, including shadows with jitter, lights behind the surface, and eight mixed lights. Side-by-side images land in `parity-out/`.
+`npm run parity` builds a synthetic scene (sloped floor, dome, box), has Electron render 23 light setups with the real shader off screen, renders the same with `shading.py`, and compares the 8-bit results. The box counts as the subject, so the rim map is exercised. Limits: mean difference at most 0.5 levels and at most 0.5 % of pixels off by more than 3 levels. Measured on the build laptop (Intel Iris Xe, 2026-10-08): **every scene within 1 level of 255, mean 0.05 to 0.09**, including shadows with jitter, lights behind the surface, and eight mixed lights. The same holds on the RTX 4050 PC with the rebuilt rim light (2026-10-08: 23 scenes, at most 1 level, mean at most 0.09). Side-by-side images land in `parity-out/`.
 
 ### Speed
 
