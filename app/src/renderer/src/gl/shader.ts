@@ -43,11 +43,14 @@ const float SHADOW_SOFT_MAX = ${f(SHADING.shadowSoftMax)};
 const float SHADOW_REACH = ${f(SHADING.shadowReach)};
 const float SHADOW_THICKNESS = ${f(SHADING.shadowThickness)};
 const float EMBED_FADE = ${f(SHADING.embedFade)};
+const float RIM_STRENGTH = ${f(SHADING.rimStrength)};
+const float RIM_WHITE = ${f(SHADING.rimWhite)};
 const float SOFT_CLIP_START = ${f(SHADING.softClipStart)};
 
 uniform sampler2D uAlbedo; // sRGB texture: sampling returns linear light
 uniform sampler2D uNormal; // rgb = n * 0.5 + 0.5, camera space (+X right, +Y up, +Z to viewer)
-uniform sampler2D uDepth;  // r: depth 0..1, 1 = nearest. g: highest depth within a few pixels
+uniform sampler2D uDepth;  // r: depth 0..1, 1 = nearest. g: highest depth within a few pixels.
+                           // b: outline strength, 1 on the near side of a depth edge
 uniform float uAspect;     // image height / width
 
 uniform int uLightCount;
@@ -118,7 +121,7 @@ float occlusion(vec3 position, vec3 ray, float diffusion, float jitter, float be
   return occluded;
 }
 
-vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, float noise) {
+vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, float outline, float noise) {
   vec3 toLight;
   vec3 ray;
   float attenuation = 1.0;
@@ -154,14 +157,22 @@ vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, float noise) {
       * occlusion(position, ray, uDiffusion[i], (noise - 0.5) * uJitter, behind, thickness);
   }
 
-  return uColor[i] * (attenuation * shadow) * (albedo * diffuse + specular);
+  // Rim light: a light behind a shape makes its outline glow. The outline comes
+  // from depth edges; squaring keeps it thin and brightest right at the edge. It
+  // is not shadowed: the rim is exactly the light that gets past the shape.
+  float fromBehind = smoothstep(0.0, 0.5, -toLight.z);
+  float rim = RIM_STRENGTH * fromBehind * outline * outline;
+
+  return uColor[i] * attenuation
+    * (shadow * (albedo * diffuse + specular) + rim * mix(albedo, vec3(1.0), RIM_WHITE));
 }
 
 void main() {
   // Sample everything before branching: mip selection needs uniform control flow.
   vec3 albedo = texture(uAlbedo, vUv).rgb;
   vec3 normal = normalize(texture(uNormal, vUv).rgb * 2.0 - 1.0);
-  float depth = texture(uDepth, vUv).r;
+  vec3 depthSample = texture(uDepth, vUv).rgb;
+  float depth = depthSample.r;
 
   bool showOriginal = uMode == MODE_ORIGINAL || (uSplit >= 0.0 && vUv.x < uSplit);
   if (showOriginal) {
@@ -175,7 +186,7 @@ void main() {
   vec3 lightSum = vec3(0.0);
   for (int i = 0; i < MAX_LIGHTS; i++) {
     if (i >= uLightCount) break;
-    lightSum += contribution(i, albedo, normal, position, noise);
+    lightSum += contribution(i, albedo, normal, position, depthSample.b, noise);
   }
 
   vec3 color = uMode == MODE_LIGHT_ONLY ? lightSum : albedo * uBase + lightSum;

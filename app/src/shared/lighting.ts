@@ -54,6 +54,10 @@ export const SHADING = {
   shadowThickness: 0.15,
   embedFade: 0.03,
   shellDilate: 0.004,
+  rimStrength: 1.5,
+  rimEdgeScale: 0.08,
+  rimWidth: 0.0015,
+  rimWhite: 0.35,
   softClipStart: 0.8,
   targetHeight: 0.5,
   defaultShadowSteps: 24
@@ -78,7 +82,7 @@ export const RANGES = {
   exposure: { min: -3, max: 3, step: 0.01 },
   keepOriginalLight: { min: 0, max: 1, step: 0.01 },
   /** Lights may sit a little outside the picture. */
-  position: { min: -0.25, max: 1.25 }
+  position: { min: -0.25, max: 1.25, step: 0.005 }
 } as const
 
 export const DEFAULT_GLOBALS: GlobalSettings = { ambient: 0, exposure: 0, keepOriginalLight: 1 }

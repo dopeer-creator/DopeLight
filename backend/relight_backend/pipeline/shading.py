@@ -33,6 +33,11 @@ SHADOW_REACH = 1.0  # how far a directional light's shadow ray travels
 SHADOW_THICKNESS = 0.15  # shell thickness of shapes, for lights behind the surface
 EMBED_FADE = 0.03  # how gradually a light counts as "behind" as it sinks under the surface
 SHELL_DILATE = 0.004  # radius of the "top nearby" filter, as a fraction of the map width
+RIM_STRENGTH = 1.5  # brightness of the outline glow from a light behind a shape
+RIM_EDGE_SCALE = 0.08  # depth step that counts as a full outline
+RIM_WHITE = 0.35  # how much of the rim is the light's own colour rather than the surface's
+RIM_WIDTH = 0.0015  # pixel unit of the outline's width, as a fraction of the map width
+RIM_REACH = (1, 2, 3, 4)  # distances of the outline map, in multiples of that unit
 SOFT_CLIP_START = 0.8  # values above this are rolled off toward 1
 TARGET_HEIGHT = 0.5  # spot/directional lights aim at this fraction of DEPTH_SCALE
 DEFAULT_SHADOW_STEPS = 24
@@ -188,6 +193,26 @@ def dilate_depth(depth: Tensor) -> Tensor:
     return F.max_pool2d(depth[None, None], 2 * radius + 1, stride=1, padding=radius)[0, 0]
 
 
+def rim_radius(width: int) -> int:
+    """Pixel unit of the outline's width. Same as rimRadius() in the app."""
+    return max(1, math.floor(width * RIM_WIDTH + 0.5))
+
+
+def outline_map(depth: Tensor) -> Tensor:
+    """Outline strength, 0..1: how much a pixel stands above the lowest depth near it.
+
+    Averaged over four distances, so it is 1 right on the near side of a depth
+    edge and fades over a few pixels inward. Same as outlineMap() in the app.
+    """
+    radius = rim_radius(depth.shape[1])
+    outline = torch.zeros_like(depth)
+    for reach in RIM_REACH:
+        size = reach * radius
+        lowest = -F.max_pool2d(-depth[None, None], 2 * size + 1, stride=1, padding=size)[0, 0]
+        outline = outline + ((depth - lowest) / RIM_EDGE_SCALE).clamp(0.0, 1.0) / len(RIM_REACH)
+    return outline
+
+
 def _occlusion(
     position: Tensor, ray: Tensor, depth: Tensor, tops: Tensor, aspect: float, diffusion: float,
     jitter: Tensor, steps: int, behind: float, thickness: float,
@@ -225,7 +250,7 @@ def _occlusion(
 
 def _contribution(
     light: Light, albedo: Tensor, normal: Tensor, position: Tensor, depth: Tensor, tops: Tensor,
-    aspect: float, noise: Tensor, steps: int, jitter: float,
+    outline: Tensor, aspect: float, noise: Tensor, steps: int, jitter: float,
 ) -> Tensor:
     device = albedo.device
     direction = torch.tensor(light_direction(light, aspect), device=device)
@@ -266,9 +291,16 @@ def _contribution(
         )
         shadow = 1.0 - light.shadow_strength * occluded
 
+    # Rim light: a light behind a shape makes its outline glow. The outline comes
+    # from depth edges; squaring keeps it thin and brightest right at the edge. It
+    # is not shadowed: the rim is exactly the light that gets past the shape.
+    from_behind = _smoothstep(0.0, 0.5, -to_light[..., 2])
+    rim = RIM_STRENGTH * from_behind * outline * outline
+    rim_colour = albedo + (1.0 - albedo) * RIM_WHITE
+
     color = torch.tensor(light.color, device=device) * light.intensity
-    falloff = (attenuation * shadow)[..., None]
-    return color * falloff * (albedo * diffuse[..., None] + specular[..., None])
+    lit = shadow[..., None] * (albedo * diffuse[..., None] + specular[..., None])
+    return color * attenuation[..., None] * (lit + rim[..., None] * rim_colour)
 
 
 def shade(
@@ -302,11 +334,13 @@ def shade(
     )
     noise = pixel_noise(height, width, device)
     tops = dilate_depth(heights)
+    outline = outline_map(heights)
 
     active = [light for light in lights if light.enabled][:MAX_LIGHTS]
     per_light = [
         _contribution(
-            light, albedo, normal, position, heights, tops, aspect, noise, shadow_steps, jitter
+            light, albedo, normal, position, heights, tops, outline, aspect, noise, shadow_steps,
+            jitter,
         )
         for light in active
     ]

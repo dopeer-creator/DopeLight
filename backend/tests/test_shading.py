@@ -42,6 +42,10 @@ def test_constants_match_the_app() -> None:
         "shadowThickness": shading.SHADOW_THICKNESS,
         "embedFade": shading.EMBED_FADE,
         "shellDilate": shading.SHELL_DILATE,
+        "rimStrength": shading.RIM_STRENGTH,
+        "rimEdgeScale": shading.RIM_EDGE_SCALE,
+        "rimWidth": shading.RIM_WIDTH,
+        "rimWhite": shading.RIM_WHITE,
         "softClipStart": shading.SOFT_CLIP_START,
         "targetHeight": shading.TARGET_HEIGHT,
         "defaultShadowSteps": shading.DEFAULT_SHADOW_STEPS,
@@ -119,7 +123,31 @@ def test_light_behind_a_shape_still_reaches_the_floor_around_it() -> None:
     result = lit(back, depth=depth)
     floor_beside, block_front = (H // 2, 10, 0), (H // 2, W // 2, 0)
     assert float(result[floor_beside]) > 0.01
-    assert float(result[block_front]) == 0.0  # faces the viewer, light is behind it
+    assert float(result[block_front]) == 0.0  # faces the viewer, away from its outline
+
+
+def test_light_behind_a_shape_gives_it_a_glowing_outline() -> None:
+    depth = np.full((H, W), 0.1, dtype=np.float32)
+    depth[10:30, 20:40] = 1.0
+    back = Light(x=0.5, y=0.5, z=0.08, specular=0.0, diffusion=0.0)
+    result = lit(back, depth=depth)
+    edge, centre, floor_far = (H // 2, 20, 0), (H // 2, W // 2, 0), (2, 2, 0)
+    assert float(result[edge]) > 0.2  # the block's outline glows
+    assert float(result[centre]) == 0.0  # its middle does not
+    outline = shading.outline_map(torch.from_numpy(depth))
+    assert float(outline[edge[0], edge[1]]) == 1.0 and float(outline[centre[0], centre[1]]) == 0.0
+    assert float(outline[floor_far[0], floor_far[1]]) == 0.0  # the low side of an edge has none
+
+
+def test_light_in_front_gives_no_rim() -> None:
+    depth = np.full((H, W), 0.1, dtype=np.float32)
+    depth[10:30, 20:40] = 1.0
+    front = Light(x=0.5, y=0.5, z=1.5, specular=0.0)
+    flat_scene = lit(front, depth=np.full((H, W), 1.0, dtype=np.float32))
+    with_block = lit(front, depth=depth)
+    # On top of the block the light is in front: same value as a flat surface at that height.
+    on_block = (H // 2, 21, 0)
+    assert float(with_block[on_block]) == pytest.approx(float(flat_scene[on_block]), rel=1e-5)
 
 
 def test_light_in_front_keeps_solid_shadows_however_tall_the_shape() -> None:

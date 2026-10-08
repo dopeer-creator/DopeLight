@@ -13,6 +13,9 @@ import { surfaceHeightAt } from '../gl/renderer'
 import { useSessionStore } from '../stores/sessionStore'
 import { Slider } from './Slider'
 
+/** The Close · Far slider runs the other way from z (z grows toward the viewer). */
+const FAR_FLIP = RANGES.z.min + RANGES.z.max
+
 const TYPES: { value: LightType; label: string; hint: string }[] = [
   { value: 'point', label: 'Point', hint: 'Shines in all directions from one spot' },
   { value: 'spot', label: 'Spot', hint: 'A cone of light aimed at a target' },
@@ -121,12 +124,26 @@ function LightProperties({ light }: { light: Light }): React.JSX.Element {
           onChange={(radius) => set({ radius })}
         />
       )}
+      {/* Position, as three sliders like Photoshop's Relight panel. Dragging the dot
+          in the picture moves the first two; the mouse wheel moves the third. */}
       <Slider
-        label="Depth"
-        title="How far the light is toward you. Low values put it behind things in the photo. Also: mouse wheel over the picture"
-        value={light.position.z}
+        label="Left · Right"
+        value={light.position.x}
+        range={RANGES.position}
+        onChange={(x) => set({ position: { ...light.position, x } })}
+      />
+      <Slider
+        label="Low · High"
+        value={1 - light.position.y}
+        range={RANGES.position}
+        onChange={(high) => set({ position: { ...light.position, y: 1 - high } })}
+      />
+      <Slider
+        label="Close · Far"
+        title="Toward you or away from you. Far enough, and the light is behind things in the photo. Also: mouse wheel over the picture"
+        value={FAR_FLIP - light.position.z}
         range={RANGES.z}
-        onChange={(z) => set({ position: { ...light.position, z } })}
+        onChange={(far) => set({ position: { ...light.position, z: FAR_FLIP - far } })}
       />
       {surface !== null && (
         <p className={`depth-note ${light.position.z < surface ? 'depth-note--behind' : ''}`}>

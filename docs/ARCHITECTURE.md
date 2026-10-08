@@ -167,7 +167,8 @@ Per light, with `N` the normal, `L` the unit vector to the light, `V = (0, 0, 1)
 | cone (spot) | `smoothstep(cos(angle/2), cos(angle/2 × (1 − softness)), −L·dir)` |
 | specular | Blinn-Phong: `specular × (N·H)^shininess`, faded out as `N·L` drops below 0.1 |
 | shadow | march from the pixel toward the light over the depth heightfield (24 steps, at most 48), jittered per pixel; the deepest overlap divided by a penumbra width (0.012 to 0.08, growing with diffusion) is the occlusion |
-| contribution | `colour × intensity × falloff × cone × shadow × (albedo × diffuse + specular)` |
+| rim | for a light behind the pixel: `1.5 × smoothstep(0, 0.5, −L.z) × outline²`, where `outline` (0..1) marks the near side of depth edges; not shadowed |
+| contribution | `colour × intensity × falloff × cone × (shadow × (albedo × diffuse + specular) + rim × mix(albedo, white, 0.35))` |
 
 Composite: `albedo × (keepOriginalLight + ambient) + Σ contributions`, times `2^exposure`, then a soft clip (unchanged below 0.8, a tanh roll-off above that never passes 1), then sRGB. With no lights and default settings the picture is the original, except that highlights above 0.8 linear are rolled off slightly.
 
@@ -187,6 +188,8 @@ So each light gets an *embed* value: the surface height at the light's own spot 
 - shapes count as **shells** at most 0.15 thick (and never thicker than 70 % of the embed depth, so the light itself stays outside the shell);
 - a ray is blocked only while it is inside a shell. Light can travel in the gap between a subject and the backdrop, so the backdrop glows around the subject, the subject's front stays dark, and edges facing the light get a rim;
 - thickness is counted from the shape's top nearby (a small max filter of the depth map, stored in the depth texture's second channel), not from the steep wall every outline has in a depth map. Without that a ray passing under a shape always hit the wall.
+
+**Rim light.** A backlight in a photo shows mostly as a bright outline. The preview draws it from an *outline map*: for each pixel, how far it stands above the lowest depth within 1, 2, 3, and 4 small steps (each 0.15 % of the image width), averaged. That is 1 right at the near side of a depth edge and fades within a few pixels. It is stored in the depth texture's third channel. Lights in front of a pixel add no rim.
 
 The switch from solid to shell fades in over the first 0.03 of embed depth. This is still a relief, not a 3-D model: there is no far side of anything, and the camera cannot move.
 
@@ -209,6 +212,10 @@ Measured with `RELIGHT_BENCH=1` on the build laptop (Intel Iris Xe integrated gr
 | 8 lights, all with shadows | 47.3 ms (21 fps) | 153.3 ms (7 fps) |
 
 **Not yet measured on the RTX 4050.** Shadows dominate the cost (24 depth samples per shadowed light per pixel).
+
+### Reference targets
+
+The user's `references/` folder (not committed: third-party images) holds a screenshot of Photoshop's Relight panel and a six-way relit portrait. From them: position sliders Left · Right, Low · High, Close · Far (built, next to dragging); a backlight with a bright rim and dark face (built, see above); and soft, realistic skin shading with deep cast shadows, which the preview only approximates and the photoreal pass (Phase 4) is for.
 
 ### Interaction
 
