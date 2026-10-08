@@ -36,7 +36,7 @@ All require `Authorization: Bearer <token>`.
 | `POST /models/ensure` | body `{"models": [...]}` (omit for all); downloads missing models; returns `job_id` |
 | `POST /session` | multipart `file` plus optional form field `normals` (`dsine`, `stablenormal`, `depth`); stores the image and starts preprocess; returns `session_id`, `job_id`, map URLs. If the maps are already cached: `cached: true`, no job |
 | `GET /session/{id}` | sizes, normals method, and per-model time/VRAM stats of a finished session |
-| `GET /session/{id}/{map}` | PNG; map is `albedo_proxy`, `normal`, `depth`, or `mask` |
+| `GET /session/{id}/{map}` | PNG; map is `albedo_proxy`, `normal`, `normal_smooth`, `depth`, `mask`, or `aux` |
 | `GET /session/{id}/depth_raw` | depth as raw little-endian uint16, row by row at working size. The preview uses this: browsers decode 16-bit PNGs to 8 bits, which would band the heightfield |
 | `POST /session/{id}/export` | JSON: `lights`, `globals`, `kind` (`relit`, `light_layer`, `per_light`), `format` (`png`, `jpeg`, `tiff`), `bit_depth` (8, 16), `quality`, `blend` (`normal`, `linear`), `alpha`, `target` (full path of the main file). Renders at full resolution and writes the files; returns `job_id`; the job's result lists the files |
 | `GET /jobs/{id}` | job state, result, or error |
@@ -210,6 +210,19 @@ Where this departs from the brief's wording:
 - **Ambient and "original light" add up** to one base factor, because the albedo is still the photo itself (v1 has no intrinsic decomposition). They become different once a real albedo exists.
 - **Preview sharpness** is limited by the working size (long edge 1536 px): the albedo texture is the albedo proxy, not the full-resolution file. Full resolution is for export (Phase 3).
 
+### Fixes for how the preview looked (2026-10-08)
+
+The user's first real test (a bright outdoor game screenshot) looked wrong in four ways. Each got a fix, in both the shader and `shading.py`:
+
+| Fault | Fix |
+| --- | --- |
+| The sky was lit like a wall | **Reach map.** The depth model predicts inverse depth: sky reads 0, the farthest indoor wall still reads 7 to 8 % of the nearest point (measured on the samples). Pixels below 0.4 % get no light at all, fading in up to 2 %. Light contributions are multiplied by it |
+| Wet, plastic-looking highlights | New lights have **specular 0**. The slider remains |
+| Blocky patches, noise, false bumps | **Smooth surface** (scene setting, default 0.3): normals lean toward a blurred copy (Gaussian, 0.6 % of the width) made at preprocess time |
+| Bright photos blew out, and new light just multiplied old light | **Even light** (scene setting, default 0.5): lights act on the photo's colours scaled by `(0.18 / brightness)^amount` (capped at 4), where `brightness` is the photo's luminance blurred by 4 % of the width. Bright regions take less new light, dark ones more. This is the brief's optional shading flattening; the base image is not changed |
+
+Preprocess writes the helper maps: `normal_smooth_<method>.png`, `reach.png` (kept beside the depth), and `aux.png` (red = reach, green = square root of brightness), which the app loads as two more textures. Sessions made before this get them on the next open (the depth model runs again, about 2 s on CPU).
+
 ### Lights behind the surface
 
 A depth map only describes the visible front of things. Shadows normally treat every shape as a solid reaching all the way back, which is the safe guess for a light in front. A light placed behind a shape would then be buried inside a solid and light nothing.
@@ -228,7 +241,7 @@ The shader's numbers come from `SHADING` in `app/src/shared/lighting.ts`; `shadi
 
 ### Parity test
 
-`npm run parity` builds a synthetic scene (sloped floor, dome, box), has Electron render 19 light setups with the real shader off screen, renders the same with `shading.py`, and compares the 8-bit results. Limits: mean difference at most 0.5 levels and at most 0.5 % of pixels off by more than 3 levels. Measured on the build laptop (Intel Iris Xe, 2026-10-08): **every scene within 1 level of 255, mean 0.05 to 0.09**, including shadows with jitter, lights behind the surface, and eight mixed lights. Side-by-side images land in `parity-out/`.
+`npm run parity` builds a synthetic scene (sloped floor, dome, box), has Electron render 21 light setups with the real shader off screen, renders the same with `shading.py`, and compares the 8-bit results. Limits: mean difference at most 0.5 levels and at most 0.5 % of pixels off by more than 3 levels. Measured on the build laptop (Intel Iris Xe, 2026-10-08): **every scene within 1 level of 255, mean 0.05 to 0.09**, including shadows with jitter, lights behind the surface, and eight mixed lights. Side-by-side images land in `parity-out/`.
 
 ### Speed
 

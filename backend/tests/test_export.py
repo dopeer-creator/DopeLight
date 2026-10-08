@@ -13,7 +13,12 @@ from relight_backend.pipeline.export import ExportOptions, export, unique_path
 from relight_backend.pipeline.normals_from_depth import normals_from_depth
 from relight_backend.pipeline.sessions import SessionMeta, SessionStore, map_file
 from relight_backend.pipeline.shading import GlobalSettings, Light
-from relight_backend.utils.image_io import load_image_array, save_gray16, save_normals
+from relight_backend.utils.image_io import (
+    load_image_array,
+    save_aux,
+    save_gray16,
+    save_normals,
+)
 
 FULL, WORKING = (96, 64), (48, 32)  # (width, height): the original, and the maps
 LIGHTS = [
@@ -50,6 +55,8 @@ def make_session(root: Path) -> tuple[SessionStore, str, np.ndarray]:
     depth = (0.2 + 0.6 * np.exp(-((mx - 0.5) ** 2 + (my - 0.5) ** 2) / 0.05)).astype(np.float32)
     save_gray16(depth, folder / map_file("depth", "depth"))
     save_normals(normals_from_depth(depth), folder / map_file("normal", "depth"))
+    save_normals(normals_from_depth(depth), folder / map_file("normal_smooth", "depth"))
+    save_aux(np.ones_like(depth), np.full_like(depth, 0.18), folder / map_file("aux", "depth"))
     store.save_meta(SessionMeta(session_id, "photo.png", FULL, WORKING, "depth", "stub"))
     return store, session_id, original
 

@@ -38,6 +38,10 @@ export interface GlobalSettings {
   exposure: number
   /** 0..1, how much of the photo's own lighting stays. */
   keepOriginalLight: number
+  /** 0..1, how far the surface leans toward its smoothed version (hides bumps, blocks, noise). */
+  smoothing: number
+  /** 0..1, even out original light: lights act on colours scaled toward mid exposure. */
+  flatten: number
 }
 
 export const MAX_LIGHTS = 8
@@ -58,6 +62,9 @@ export const SHADING = {
   rimEdgeScale: 0.08,
   rimWidth: 0.0015,
   rimWhite: 0.35,
+  flattenTarget: 0.18,
+  flattenFloor: 0.02,
+  flattenMax: 4.0,
   softClipStart: 0.8,
   targetHeight: 0.5,
   defaultShadowSteps: 24
@@ -81,11 +88,19 @@ export const RANGES = {
   ambient: { min: 0, max: 2, step: 0.01 },
   exposure: { min: -3, max: 3, step: 0.01 },
   keepOriginalLight: { min: 0, max: 1, step: 0.01 },
+  smoothing: { min: 0, max: 1, step: 0.01 },
+  flatten: { min: 0, max: 1, step: 0.01 },
   /** Lights may sit a little outside the picture. */
   position: { min: -0.25, max: 1.25, step: 0.005 }
 } as const
 
-export const DEFAULT_GLOBALS: GlobalSettings = { ambient: 0, exposure: 0, keepOriginalLight: 1 }
+export const DEFAULT_GLOBALS: GlobalSettings = {
+  ambient: 0,
+  exposure: 0,
+  keepOriginalLight: 1,
+  smoothing: 0.3,
+  flatten: 0.5
+}
 
 const DEFAULT_COLORS: [number, number, number][] = [
   [1, 0.86, 0.68], // warm key
@@ -114,7 +129,8 @@ export function createLight(id: string, index: number): Light {
     intensity: 1.5,
     diffusion: 0.3,
     radius: 0.8,
-    specular: 0.2,
+    // Off by default: on estimated surfaces, highlights tend to look like wet plastic.
+    specular: 0,
     shininess: 32,
     coneAngle: 50,
     coneSoftness: 0.5,

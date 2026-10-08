@@ -17,6 +17,10 @@ export interface RelightMaps {
   albedo: TexImageSource
   /** Normal map image, rgb = n * 0.5 + 0.5. */
   normal: TexImageSource
+  /** The same normals, blurred. */
+  normalSmooth: TexImageSource
+  /** Helper maps: red = where lights reach, green = sqrt of large-scale brightness. */
+  aux: TexImageSource
   /** Depth 0..1 (1 = nearest), row by row from the top. */
   depth: Float32Array
   width: number
@@ -125,7 +129,7 @@ const TYPE_INDEX = { point: 0, directional: 1, spot: 2 } as const
 const MODE_INDEX: Record<ViewMode, number> = { relit: 0, original: 1, lightOnly: 2 }
 
 const UNIFORMS = [
-  'uAlbedo', 'uNormal', 'uDepth', 'uAspect', 'uLightCount', 'uType', 'uPosition', 'uDirection',
+  'uAlbedo', 'uNormal', 'uDepth', 'uNormalSmooth', 'uAux', 'uSmoothing', 'uFlatten', 'uAspect', 'uLightCount', 'uType', 'uPosition', 'uDirection',
   'uColor', 'uDiffusion', 'uRadius', 'uSpecular', 'uShininess', 'uCone', 'uShadow', 'uEmbed', 'uBase',
   'uGain', 'uShadowSteps', 'uJitter', 'uMode', 'uSplit'
 ] as const
@@ -215,7 +219,14 @@ export class RelightRenderer {
     const format = this.floatLinear ? gl.RGB32F : gl.RGB16F
     gl.texImage2D(gl.TEXTURE_2D, 0, format, maps.width, maps.height, 0, gl.RGB, gl.FLOAT, packed)
 
-    this.textures = [albedo, normal, depth]
+    const normalSmooth = this.createTexture(3, true)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, maps.normalSmooth)
+    gl.generateMipmap(gl.TEXTURE_2D)
+
+    const aux = this.createTexture(4, false)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, maps.aux)
+
+    this.textures = [albedo, normal, depth, normalSmooth, aux]
     this.ready = true
   }
 
@@ -276,6 +287,10 @@ export class RelightRenderer {
     gl.uniform1i(u.uAlbedo, 0)
     gl.uniform1i(u.uNormal, 1)
     gl.uniform1i(u.uDepth, 2)
+    gl.uniform1i(u.uNormalSmooth, 3)
+    gl.uniform1i(u.uAux, 4)
+    gl.uniform1f(u.uSmoothing, params.globals.smoothing)
+    gl.uniform1f(u.uFlatten, params.globals.flatten)
     gl.uniform1f(u.uAspect, this.aspect)
     gl.uniform1i(u.uLightCount, lights.length)
     gl.uniform1iv(u.uType, types)

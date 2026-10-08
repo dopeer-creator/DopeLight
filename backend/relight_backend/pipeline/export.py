@@ -56,6 +56,7 @@ from relight_backend.pipeline.shading import (
 from relight_backend.utils.device import pick_device, release_memory
 from relight_backend.utils.image_io import (
     FloatArray,
+    load_aux,
     load_gray16,
     load_image,
     load_normals,
@@ -180,10 +181,23 @@ def export(
     tops = _scale_up(dilate_depth(working).numpy(), width, height)
     outline = _scale_up(outline_map(working).numpy(), width, height)
 
+    smooth = normalize_vectors(_scale_up(
+        load_normals(folder / map_file("normal_smooth", meta.normals_method)), width, height
+    ))
+    working_reach, working_brightness = load_aux(folder / map_file("aux", meta.normals_method))
+    reach = _scale_up(working_reach, width, height)
+    brightness = _scale_up(working_brightness, width, height)
+
     active = [light for light in lights if light.enabled]
     suffix = FORMATS[options.format]
     target = target.with_suffix(suffix)
-    plain_settings = settings == GlobalSettings()
+    # Only these three change the base image; the others only change what lights add.
+    plain = GlobalSettings()
+    plain_settings = (
+        settings.keep_original_light == plain.keep_original_light
+        and settings.ambient == plain.ambient
+        and settings.exposure == plain.exposure
+    )
 
     # name -> (path, channels). Arrays are filled strip by strip.
     planned: dict[str, tuple[Path, int]] = {}
@@ -211,7 +225,8 @@ def export(
               for key, (_path, channels) in planned.items()}
 
     def render(device: torch.device) -> None:
-        scene = prepare_scene(albedo, normals, depth, device, tops, outline)
+        scene = prepare_scene(albedo, normals, depth, device, tops, outline, smooth, reach,
+                              brightness)
         strip = max(1, STRIP_PIXELS // width)
         for start in range(0, height, strip):
             reporter.check_cancel()

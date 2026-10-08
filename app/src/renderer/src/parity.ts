@@ -48,6 +48,8 @@ export async function runParity(): Promise<void> {
     renderer.setMaps({
       albedo: await pngBitmap(fixture.albedo),
       normal: await pngBitmap(fixture.normal),
+      normalSmooth: await pngBitmap(fixture.normalSmooth),
+      aux: await pngBitmap(fixture.aux),
       // Copy: the IPC buffer may not be aligned for a Uint16Array view.
       depth: depthFromUint16(fixture.depth.slice()),
       width: file.width,

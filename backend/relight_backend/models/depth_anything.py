@@ -14,6 +14,20 @@ from relight_backend.models import specs
 from relight_backend.models.base import Model
 from relight_backend.utils.image_io import FloatArray
 
+# The model predicts inverse depth: the sky reads 0, the nearest point the
+# highest value. Measured on the sample photos, the farthest indoor wall still
+# reads 7 to 8 % of the nearest point and a studio backdrop about 2 %, so
+# "below a few tenths of a percent" means "infinitely far".
+REACH_START = 0.004
+REACH_FULL = 0.02
+
+
+def light_reach(raw: FloatArray) -> FloatArray:
+    """1 where a light in the scene can reach, fading to 0 for sky and the far distance."""
+    nearest = max(float(np.percentile(raw, 99.5)), 1e-6)
+    t = np.clip((raw / nearest - REACH_START) / (REACH_FULL - REACH_START), 0.0, 1.0)
+    return np.asarray(t * t * (3.0 - 2.0 * t), dtype=np.float32)
+
 
 def normalize_depth(raw: FloatArray) -> FloatArray:
     """Scale to [0, 1] using robust percentiles so a few outliers do not flatten the map."""
@@ -44,4 +58,6 @@ class DepthAnythingV2Small(Model):
                 mode="bicubic",
                 align_corners=False,
             )
-        return normalize_depth(resized[0, 0].cpu().numpy())
+        raw = resized[0, 0].cpu().numpy()
+        self.extras["reach"] = light_reach(raw)
+        return normalize_depth(raw)

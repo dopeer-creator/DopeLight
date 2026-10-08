@@ -45,12 +45,17 @@ const float SHADOW_THICKNESS = ${f(SHADING.shadowThickness)};
 const float EMBED_FADE = ${f(SHADING.embedFade)};
 const float RIM_STRENGTH = ${f(SHADING.rimStrength)};
 const float RIM_WHITE = ${f(SHADING.rimWhite)};
+const float FLATTEN_TARGET = ${f(SHADING.flattenTarget)};
+const float FLATTEN_FLOOR = ${f(SHADING.flattenFloor)};
+const float FLATTEN_MAX = ${f(SHADING.flattenMax)};
 const float SOFT_CLIP_START = ${f(SHADING.softClipStart)};
 
 uniform sampler2D uAlbedo; // sRGB texture: sampling returns linear light
 uniform sampler2D uNormal; // rgb = n * 0.5 + 0.5, camera space (+X right, +Y up, +Z to viewer)
 uniform sampler2D uDepth;  // r: depth 0..1, 1 = nearest. g: highest depth within a few pixels.
                            // b: outline strength, 1 on the near side of a depth edge
+uniform sampler2D uNormalSmooth; // the same normals, blurred
+uniform sampler2D uAux;    // r: 1 where lights reach, 0 for sky. g: sqrt of large-scale brightness
 uniform float uAspect;     // image height / width
 
 uniform int uLightCount;
@@ -67,6 +72,8 @@ uniform float uShadow[MAX_LIGHTS];   // shadow strength, 0 = no shadows
 uniform float uEmbed[MAX_LIGHTS];    // how far the light is below the photo's surface at its own spot
                                      // (> 0 = behind it); directional: +-1000 by where it comes from
 
+uniform float uSmoothing; // 0..1: lean the normals toward the blurred ones
+uniform float uFlatten;   // 0..1: even out original light
 uniform float uBase;      // keepOriginalLight + ambient
 uniform float uGain;      // 2 ^ exposure
 uniform int uShadowSteps;
@@ -171,6 +178,8 @@ void main() {
   // Sample everything before branching: mip selection needs uniform control flow.
   vec3 albedo = texture(uAlbedo, vUv).rgb;
   vec3 normal = normalize(texture(uNormal, vUv).rgb * 2.0 - 1.0);
+  vec3 smoothNormal = normalize(texture(uNormalSmooth, vUv).rgb * 2.0 - 1.0);
+  vec3 aux = texture(uAux, vUv).rgb;
   vec3 depthSample = texture(uDepth, vUv).rgb;
   float depth = depthSample.r;
 
@@ -183,11 +192,19 @@ void main() {
   vec3 position = vec3(vUv.x, (1.0 - vUv.y) * uAspect, DEPTH_SCALE * depth);
   float noise = pixelNoise(gl_FragCoord.xy);
 
+  normal = normalize(mix(normal, smoothNormal, uSmoothing));
+  // What the lights fall on: the photo's colours, evened out toward mid exposure,
+  // so new light does not just multiply the lighting already in the photo.
+  float brightness = aux.g * aux.g;
+  float even = min(pow(FLATTEN_TARGET / max(brightness, FLATTEN_FLOOR), uFlatten), FLATTEN_MAX);
+  vec3 litAlbedo = albedo * even;
+
   vec3 lightSum = vec3(0.0);
   for (int i = 0; i < MAX_LIGHTS; i++) {
     if (i >= uLightCount) break;
-    lightSum += contribution(i, albedo, normal, position, depthSample.b, noise);
+    lightSum += contribution(i, litAlbedo, normal, position, depthSample.b, noise);
   }
+  lightSum *= aux.r; // no light on the sky and the far distance
 
   vec3 color = uMode == MODE_LIGHT_ONLY ? lightSum : albedo * uBase + lightSum;
   outColor = vec4(linearToSrgb(softClip(color * uGain)), 1.0);

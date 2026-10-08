@@ -38,6 +38,11 @@ RIM_EDGE_SCALE = 0.08  # depth step that counts as a full outline
 RIM_WHITE = 0.35  # how much of the rim is the light's own colour rather than the surface's
 RIM_WIDTH = 0.0015  # pixel unit of the outline's width, as a fraction of the map width
 RIM_REACH = (1, 2, 3, 4)  # distances of the outline map, in multiples of that unit
+# "Even out original light": lights act on the photo's colours scaled toward a
+# mid-grey exposure, so they do not just multiply the lighting already in it.
+FLATTEN_TARGET = 0.18  # the brightness regions are scaled toward
+FLATTEN_FLOOR = 0.02  # regions darker than this are treated as this bright
+FLATTEN_MAX = 4.0  # never brighten by more than this
 SOFT_CLIP_START = 0.8  # values above this are rolled off toward 1
 TARGET_HEIGHT = 0.5  # spot/directional lights aim at this fraction of DEPTH_SCALE
 DEFAULT_SHADOW_STEPS = 24
@@ -57,7 +62,7 @@ class Light:
     intensity: float = 1.5
     diffusion: float = 0.3
     radius: float = 0.8
-    specular: float = 0.2
+    specular: float = 0.0
     shininess: float = 32.0
     cone_angle: float = 50.0  # full angle, degrees
     cone_softness: float = 0.5
@@ -97,6 +102,8 @@ class GlobalSettings:
     ambient: float = 0.0  # 0..2, flat fill light
     exposure: float = 0.0  # stops
     keep_original_light: float = 1.0  # 0..1
+    smoothing: float = 0.0  # 0..1, how far normals lean toward their blurred version
+    flatten: float = 0.0  # 0..1, "even out original light" (see FLATTEN_TARGET)
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> GlobalSettings:
@@ -104,6 +111,8 @@ class GlobalSettings:
             ambient=float(data["ambient"]),
             exposure=float(data["exposure"]),
             keep_original_light=float(data["keepOriginalLight"]),
+            smoothing=float(data.get("smoothing", 0.0)),
+            flatten=float(data.get("flatten", 0.0)),
         )
 
 
@@ -332,12 +341,17 @@ class Scene:
     heights: Tensor  # depth 0..1
     tops: Tensor  # highest depth nearby (see dilate_depth)
     outline: Tensor  # see outline_map
+    normal_smooth: Tensor  # blurred normals, for the smoothing setting
+    reach: Tensor  # 1 where lights reach, 0 for sky and the far distance
+    brightness: Tensor  # large-scale linear brightness of the photo
 
 
 def prepare_scene(
     albedo_srgb: FloatArray, normals: FloatArray, depth: FloatArray,
     device: torch.device | None = None,
     tops: FloatArray | None = None, outline: FloatArray | None = None,
+    normal_smooth: FloatArray | None = None, reach: FloatArray | None = None,
+    brightness: FloatArray | None = None,
 ) -> Scene:
     """Convert float32 maps (the app's map conventions) for shading.
 
@@ -350,9 +364,16 @@ def prepare_scene(
     def given(values: FloatArray) -> Tensor:
         return torch.from_numpy(np.ascontiguousarray(values)).to(device)
 
+    normal = F.normalize(given(normals), dim=-1)
+    # Without the helper maps: no smoothing, lights reach everywhere, no evening out.
+    smooth = normal if normal_smooth is None else F.normalize(given(normal_smooth), dim=-1)
+    even = torch.full_like(heights, FLATTEN_TARGET) if brightness is None else given(brightness)
     return Scene(
-        albedo=srgb_to_linear(torch.from_numpy(np.ascontiguousarray(albedo_srgb)).to(device)),
-        normal=F.normalize(torch.from_numpy(np.ascontiguousarray(normals)).to(device), dim=-1),
+        albedo=srgb_to_linear(given(albedo_srgb)),
+        normal=normal,
+        normal_smooth=smooth,
+        reach=torch.ones_like(heights) if reach is None else given(reach),
+        brightness=even,
         heights=heights,
         tops=dilate_depth(heights) if tops is None else given(tops),
         outline=outline_map(heights) if outline is None else given(outline),
@@ -379,6 +400,12 @@ def shade_scene(
     aspect = height / width
 
     albedo, normal = scene.albedo[start:end], scene.normal[start:end]
+    smooth = scene.normal_smooth[start:end]
+    normal = F.normalize(normal + (smooth - normal) * settings.smoothing, dim=-1)
+    # What the lights fall on: the photo's colours, evened out toward mid exposure.
+    even = FLATTEN_TARGET / scene.brightness[start:end].clamp_min(FLATTEN_FLOOR)
+    lit_albedo = albedo * (even**settings.flatten).clamp(max=FLATTEN_MAX)[..., None]
+    reach = scene.reach[start:end, :, None]
     u = (torch.arange(width, device=device, dtype=torch.float32) + 0.5) / width
     v = (torch.arange(start, end, device=device, dtype=torch.float32) + 0.5) / height
     position = torch.stack(
@@ -394,9 +421,9 @@ def shade_scene(
     active = [light for light in lights if light.enabled][:MAX_LIGHTS]
     per_light = [
         _contribution(
-            light, albedo, normal, position, scene.heights, scene.tops, scene.outline[start:end],
-            aspect, noise, shadow_steps, jitter,
-        )
+            light, lit_albedo, normal, position, scene.heights, scene.tops,
+            scene.outline[start:end], aspect, noise, shadow_steps, jitter,
+        ) * reach
         for light in active
     ]
     light_sum = torch.stack(per_light).sum(dim=0) if per_light else torch.zeros_like(albedo)

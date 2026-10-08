@@ -46,6 +46,9 @@ def test_constants_match_the_app() -> None:
         "rimEdgeScale": shading.RIM_EDGE_SCALE,
         "rimWidth": shading.RIM_WIDTH,
         "rimWhite": shading.RIM_WHITE,
+        "flattenTarget": shading.FLATTEN_TARGET,
+        "flattenFloor": shading.FLATTEN_FLOOR,
+        "flattenMax": shading.FLATTEN_MAX,
         "softClipStart": shading.SOFT_CLIP_START,
         "targetHeight": shading.TARGET_HEIGHT,
         "defaultShadowSteps": shading.DEFAULT_SHADOW_STEPS,
@@ -196,6 +199,44 @@ def test_relit_is_base_plus_light_layer_and_exposure_doubles() -> None:
                      GlobalSettings(keep_original_light=0.5, ambient=0.1, exposure=1.0))
     assert float(brighter.relit.max()) < shading.SOFT_CLIP_START  # still in the linear part
     assert torch.allclose(brighter.relit, result.relit * 2.0, atol=1e-6)
+
+
+def scene_with(**maps: np.ndarray) -> shading.Scene:
+    return shading.prepare_scene(GREY, FACING, FLAT, **maps)  # type: ignore[arg-type]
+
+
+def test_lights_do_not_reach_the_sky() -> None:
+    reach = np.ones((H, W), dtype=np.float32)
+    reach[:10] = 0.0  # the top rows are sky
+    lamp = [Light(x=0.5, y=0.1, z=0.6)]
+    result = shading.shade_scene(scene_with(reach=reach), lamp, GlobalSettings())
+    base = shading.srgb_to_linear(torch.from_numpy(GREY))
+    assert torch.allclose(result.relit[:10], base[:10])  # sky: untouched
+    assert float((result.relit[20] - base[20]).min()) > 0.01  # ground: lit
+
+
+def test_evening_out_tames_bright_regions_and_lifts_dark_ones() -> None:
+    brightness = np.full((H, W), 0.18, dtype=np.float32)
+    brightness[:, :20] = 0.8  # already brightly lit
+    brightness[:, 40:] = 0.02  # in deep shade
+    lamp = [Light(type="directional", z=2.0, intensity=0.3)]  # dim: stays below the soft clip
+    scene = scene_with(brightness=brightness)
+    plain = shading.shade_scene(scene, lamp, NO_BASE).relit[H // 2, :, 0]
+    evened = shading.shade_scene(scene, lamp, GlobalSettings(keep_original_light=0, flatten=1.0)
+                                 ).relit[H // 2, :, 0]
+    assert float(evened[5]) < float(plain[5])  # bright region gets less
+    assert float(evened[30]) == pytest.approx(float(plain[30]), rel=1e-5)  # mid: unchanged
+    assert float(evened[55]) == pytest.approx(float(plain[55]) * shading.FLATTEN_MAX, rel=1e-4)
+
+
+def test_smoothing_blends_toward_the_smooth_normals() -> None:
+    tilted = np.tile(np.array([0.8, 0.0, 0.6], dtype=np.float32), (H, W, 1))
+    scene = shading.prepare_scene(GREY, tilted, FLAT, normal_smooth=FACING)
+    lamp = [Light(type="directional", x=0.5, y=0.5, z=2.0, diffusion=0.0)]  # straight on
+    values = [float(shading.shade_scene(
+        scene, lamp, GlobalSettings(keep_original_light=0, smoothing=amount)).relit[5, 5, 0])
+        for amount in (0.0, 0.5, 1.0)]
+    assert values[0] < values[1] < values[2]
 
 
 def test_soft_clip_is_identity_then_rolls_off_below_one() -> None:

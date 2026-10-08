@@ -69,6 +69,8 @@ export interface ParityFixture {
   scenes: string
   albedo: Uint8Array
   normal: Uint8Array
+  normalSmooth: Uint8Array
+  aux: Uint8Array
   /** raw little-endian uint16 */
   depth: Uint8Array
 }

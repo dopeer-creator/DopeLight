@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+import cv2
+import numpy as np
 import torch
 from PIL import Image
 
@@ -24,9 +26,13 @@ from relight_backend.utils import downloads
 from relight_backend.utils.device import pick_device, pick_dtype
 from relight_backend.utils.image_io import (
     FloatArray,
+    load_gray8,
     load_gray16,
     load_image,
+    load_normals,
+    normalize_vectors,
     resize_long_edge,
+    save_aux,
     save_gray8,
     save_gray16,
     save_normals,
@@ -74,7 +80,8 @@ def model_class(spec: specs.ModelSpec) -> type[Model]:
 
 
 def run_model(
-    spec: specs.ModelSpec, image: Image.Image, reporter: Reporter, stage: str, progress: float
+    spec: specs.ModelSpec, image: Image.Image, reporter: Reporter, stage: str, progress: float,
+    extras: dict[str, FloatArray] | None = None,
 ) -> tuple[FloatArray, dict[str, Any]]:
     """Download if needed, then load, infer, unload. Returns the map and its stats."""
 
@@ -99,6 +106,8 @@ def run_model(
             reporter.report(stage, progress, f"{spec.title}: GPU out of memory, retrying on CPU")
             device = torch.device("cpu")
             output, infer_seconds = _load_and_infer(model, files, image, device)
+    if extras is not None:
+        extras.update(model.extras)
     stats = {
         "model": spec.key,
         "device": device.type,
@@ -121,6 +130,26 @@ def _load_and_infer(
         return output, round(time.perf_counter() - loaded_at, 2)
     finally:
         model.unload()
+
+
+REACH_FILE = "reach.png"  # kept beside the depth; served to the app inside aux.png
+SMOOTH_NORMALS_SIGMA = 0.006  # blur radius of the smooth normals, as a fraction of the width
+BRIGHTNESS_SIGMA = 0.04  # ... and of the large-scale brightness
+
+
+def smooth_normals(normals: FloatArray) -> FloatArray:
+    """Blurred normals: the surface without fine bumps, compression blocks, or noise."""
+    sigma = max(1.0, normals.shape[1] * SMOOTH_NORMALS_SIGMA)
+    return normalize_vectors(np.asarray(cv2.GaussianBlur(normals, (0, 0), sigma), dtype=np.float32))
+
+
+def large_scale_brightness(image: Image.Image) -> FloatArray:
+    """Linear-light luminance of the photo, heavily blurred: how lit each region already is."""
+    srgb = np.asarray(image, dtype=np.float32) / 255.0
+    linear = np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4)
+    luminance = (linear @ np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)).astype(np.float32)
+    sigma = max(1.0, image.width * BRIGHTNESS_SIGMA)
+    return np.asarray(cv2.GaussianBlur(luminance, (0, 0), sigma), dtype=np.float32)
 
 
 def _clear_maps(folder: Path) -> None:
@@ -162,11 +191,14 @@ def preprocess(
 
     reporter.check_cancel()
     depth_path = folder / map_file("depth", options.normals)
-    if depth_path.exists():
+    reach_path = folder / REACH_FILE
+    if depth_path.exists() and reach_path.exists():
         depth = load_gray16(depth_path)
     else:
-        depth, stats["depth"] = run_model(specs.DEPTH, working, reporter, "depth", 0.35)
+        extras: dict[str, FloatArray] = {}
+        depth, stats["depth"] = run_model(specs.DEPTH, working, reporter, "depth", 0.35, extras)
         save_gray16(depth, depth_path)
+        save_gray8(extras.get("reach", np.ones_like(depth)), reach_path)
 
     reporter.check_cancel()
     normals_path = folder / map_file("normal", options.normals)
@@ -183,6 +215,13 @@ def preprocess(
             normals, normal_stats = run_model(normals_spec, working, reporter, "normals", 0.55)
         stats[f"normals_{options.normals}"] = normal_stats
         save_normals(normals, normals_path)
+
+    smooth_path = folder / map_file("normal_smooth", options.normals)
+    if not smooth_path.exists():
+        save_normals(smooth_normals(load_normals(normals_path)), smooth_path)
+    aux_path = folder / map_file("aux", options.normals)
+    if not aux_path.exists():
+        save_aux(load_gray8(reach_path), large_scale_brightness(working), aux_path)
 
     meta = SessionMeta(
         id=session_id,

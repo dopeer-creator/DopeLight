@@ -229,6 +229,20 @@ export function LightsPanel(): React.JSX.Element {
         />
         <Slider label="Ambient" title="Flat fill light everywhere" value={globals.ambient} range={RANGES.ambient} onChange={(ambient) => updateGlobals({ ambient })} />
         <Slider label="Exposure" title="Overall brightness, in stops" value={globals.exposure} range={RANGES.exposure} onChange={(exposure) => updateGlobals({ exposure })} />
+        <Slider
+          label="Even light"
+          title="Evens out the photo's own lighting under your lights: bright areas take less new light, dark areas more. Stops bright photos from blowing out."
+          value={globals.flatten}
+          range={RANGES.flatten}
+          onChange={(flatten) => updateGlobals({ flatten })}
+        />
+        <Slider
+          label="Smooth surface"
+          title="Smooths the estimated surface. Hides blocky patches, noise, and false bumps; too much loses real detail."
+          value={globals.smoothing}
+          range={RANGES.smoothing}
+          onChange={(smoothing) => updateGlobals({ smoothing })}
+        />
       </div>
     </aside>
   )

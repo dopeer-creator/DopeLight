@@ -35,13 +35,16 @@ async function fetchBitmap(path: string): Promise<ImageBitmap> {
 
 async function fetchMaps(sessionId: string): Promise<RelightMaps> {
   const info = (await (await backendFetch(`/session/${sessionId}`)).json()) as SessionInfo
-  const [albedo, normal, depthBytes] = await Promise.all([
+  const [albedo, normal, normalSmooth, aux, depthBytes] = await Promise.all([
     fetchBitmap(`/session/${sessionId}/albedo_proxy`),
     fetchBitmap(`/session/${sessionId}/normal`),
+    fetchBitmap(`/session/${sessionId}/normal_smooth`),
+    fetchBitmap(`/session/${sessionId}/aux`),
     backendFetch(`/session/${sessionId}/depth_raw`).then((response) => response.arrayBuffer())
   ])
   const [width, height] = info.working_size
-  return { albedo, normal, depth: depthFromUint16(new Uint8Array(depthBytes)), width, height }
+  const depth = depthFromUint16(new Uint8Array(depthBytes))
+  return { albedo, normal, normalSmooth, aux, depth, width, height }
 }
 
 /** Counts opens, so a slow earlier open cannot overwrite a newer one. */

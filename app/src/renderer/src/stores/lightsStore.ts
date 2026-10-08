@@ -150,7 +150,14 @@ export const useLightsStore = create<LightsStore>((set, get) => ({
   updateGlobals: (patch) => set((state) => ({ globals: { ...state.globals, ...patch } })),
 
   reset: (lights = [], globals = DEFAULT_GLOBALS) =>
-    set({ lights, globals, selectedId: lights[0]?.id ?? null, past: [], future: [] })
+    // Settings saved before a newer one existed get that setting's default.
+    set({
+      lights,
+      globals: { ...DEFAULT_GLOBALS, ...globals },
+      selectedId: lights[0]?.id ?? null,
+      past: [],
+      future: []
+    })
 }))
 
 /** A first light for a freshly opened image, so the effect is visible at once. */

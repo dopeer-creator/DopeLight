@@ -12,7 +12,9 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-MAP_NAMES = ("albedo_proxy", "normal", "depth", "mask")
+# aux packs two helper maps in one picture: red = where lights reach (0 = sky),
+# green = square root of the photo's large-scale brightness.
+MAP_NAMES = ("albedo_proxy", "normal", "normal_smooth", "depth", "mask", "aux")
 ORIGINAL_FILE = "original.bin"
 META_FILE = "meta.json"
 
@@ -76,4 +78,6 @@ class SessionStore:
 
 def map_file(name: str, normals_method: str) -> str:
     """Normals are stored per method so switching method keeps the others cached."""
-    return f"normal_{normals_method}.png" if name == "normal" else f"{name}.png"
+    if name in ("normal", "normal_smooth"):
+        return f"{name}_{normals_method}.png"
+    return f"{name}.png"

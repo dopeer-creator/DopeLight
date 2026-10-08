@@ -63,6 +63,8 @@ export function registerDevHandlers(): void {
       scenes: readFileSync(join(folder, 'scenes.json'), 'utf8'),
       albedo: readFileSync(join(folder, 'albedo.png')),
       normal: readFileSync(join(folder, 'normal.png')),
+      normalSmooth: readFileSync(join(folder, 'normal_smooth.png')),
+      aux: readFileSync(join(folder, 'aux.png')),
       depth: readFileSync(join(folder, 'depth.raw'))
     }
   })

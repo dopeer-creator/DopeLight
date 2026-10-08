@@ -26,14 +26,24 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "backend"))  # this script lives outside the backend package
 
 from relight_backend.pipeline.normals_from_depth import normals_from_depth  # noqa: E402
+from relight_backend.pipeline.preprocess import (  # noqa: E402
+    large_scale_brightness,
+    smooth_normals,
+)
 from relight_backend.pipeline.shading import (  # noqa: E402
     GlobalSettings,
     Light,
-    shade,
+    prepare_scene,
+    shade_scene,
     srgb_to_linear,
     to_srgb8,
 )
-from relight_backend.utils.image_io import load_normals, save_normals  # noqa: E402
+from relight_backend.utils.image_io import (  # noqa: E402
+    load_aux,
+    load_normals,
+    save_aux,
+    save_normals,
+)
 
 OUT = ROOT / "parity-out"
 WIDTH, HEIGHT = 320, 200
@@ -44,8 +54,8 @@ MAX_MEAN_DIFF = 0.5
 MAX_FRACTION_OVER_3 = 0.005
 
 
-def build_maps() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Albedo (uint8 RGB), normals (float, via 8-bit PNG), depth (uint16)."""
+def build_maps() -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarray]]:
+    """Albedo (uint8 RGB), normals (float, via 8-bit PNG), depth (uint16), helper maps."""
     xs, ys = np.meshgrid(np.linspace(0, 1, WIDTH), np.linspace(0, 1, HEIGHT))
 
     # A sloped floor, a dome, and a box whose hard edges give shadows something to catch.
@@ -64,9 +74,18 @@ def build_maps() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     ]) * checker[..., None]
     albedo8 = np.clip(albedo * 255.0 + 0.5, 0, 255).astype(np.uint8)
 
-    # Round-trip through the PNG so both sides read the very same 8-bit normals.
+    # Round-trip through the PNGs so both sides read the very same 8-bit values.
     save_normals(normals_from_depth((depth16 / 65535.0).astype(np.float32)), OUT / "normal.png")
-    return albedo8, load_normals(OUT / "normal.png"), depth16
+    normals = load_normals(OUT / "normal.png")
+    save_normals(smooth_normals(normals), OUT / "normal_smooth.png")
+    # The top-right corner is "sky": lights fade out there.
+    reach = np.clip(((1.0 - xs) + ys - 0.35) / 0.15, 0.0, 1.0).astype(np.float32)
+    Image.fromarray(albedo8, mode="RGB").save(OUT / "albedo.png")
+    save_aux(reach, large_scale_brightness(Image.open(OUT / "albedo.png")), OUT / "aux.png")
+    reach8, brightness = load_aux(OUT / "aux.png")
+    helpers = {"normal_smooth": load_normals(OUT / "normal_smooth.png"), "reach": reach8,
+               "brightness": brightness}
+    return albedo8, normals, depth16, helpers
 
 
 def light(**overrides: Any) -> dict[str, Any]:
@@ -83,7 +102,8 @@ def light(**overrides: Any) -> dict[str, Any]:
 def scene(name: str, lights: list[dict[str, Any]], **overrides: Any) -> dict[str, Any]:
     base: dict[str, Any] = {
         "name": name, "lights": lights, "mode": "relit", "split": None,
-        "globals": {"ambient": 0.0, "exposure": 0.0, "keepOriginalLight": 1.0},
+        "globals": {"ambient": 0.0, "exposure": 0.0, "keepOriginalLight": 1.0,
+                    "smoothing": 0.0, "flatten": 0.0},
         "shadowSteps": 24, "jitter": 1.0,
     }
     return {**base, **overrides}
@@ -136,9 +156,18 @@ def build_scenes() -> list[dict[str, Any]]:
                                  target={"x": 0.3, "y": 0.5})]),
         scene("eight_lights", eight),
         scene("globals", [light()],
-              globals={"ambient": 0.4, "exposure": 0.7, "keepOriginalLight": 0.5}),
+              globals={"ambient": 0.4, "exposure": 0.7, "keepOriginalLight": 0.5,
+                       "smoothing": 0.0, "flatten": 0.0}),
+        scene("smooth_and_even", [light(), light(position={"x": 0.8, "y": 0.3, "z": 0.6},
+                                                 castShadows=True)],
+              globals={"ambient": 0.0, "exposure": 0.0, "keepOriginalLight": 1.0,
+                       "smoothing": 0.6, "flatten": 0.7}),
+        scene("fully_smooth_and_even", [light(specular=0.6)],
+              globals={"ambient": 0.0, "exposure": 0.0, "keepOriginalLight": 0.4,
+                       "smoothing": 1.0, "flatten": 1.0}),
         scene("dark_base", [light(intensity=4.0)],
-              globals={"ambient": 0.0, "exposure": -1.0, "keepOriginalLight": 0.0}),
+              globals={"ambient": 0.0, "exposure": -1.0, "keepOriginalLight": 0.0,
+                       "smoothing": 0.0, "flatten": 0.0}),
         scene("light_only", [light(), light(position={"x": 0.8, "y": 0.7, "z": 0.5},
                                             color=[0.55, 0.72, 1.0])], mode="lightOnly"),
         scene("disabled_light", [light(enabled=False, intensity=5.0), light()]),
@@ -147,14 +176,17 @@ def build_scenes() -> list[dict[str, Any]]:
 
 
 def render_python(item: dict[str, Any], albedo: np.ndarray, normals: np.ndarray,
-                  depth16: np.ndarray) -> np.ndarray:
+                  depth16: np.ndarray, helpers: dict[str, np.ndarray]) -> np.ndarray:
     albedo_float = albedo.astype(np.float32) / 255.0
     if item["mode"] == "original":
         import torch
 
         return to_srgb8(srgb_to_linear(torch.from_numpy(albedo_float)))
-    shaded = shade(
-        albedo_float, normals, (depth16 / 65535.0).astype(np.float32),
+    scene_maps = prepare_scene(
+        albedo_float, normals, (depth16 / 65535.0).astype(np.float32), **helpers
+    )
+    shaded = shade_scene(
+        scene_maps,
         [Light.from_json(entry) for entry in item["lights"]],
         GlobalSettings.from_json(item["globals"]),
         shadow_steps=item["shadowSteps"], jitter=item["jitter"],
@@ -189,9 +221,8 @@ def main() -> None:
 
     shutil.rmtree(OUT, ignore_errors=True)
     OUT.mkdir(parents=True)
-    albedo, normals, depth16 = build_maps()
+    albedo, normals, depth16, helpers = build_maps()
     scenes = build_scenes()
-    Image.fromarray(albedo, mode="RGB").save(OUT / "albedo.png")
     (OUT / "depth.raw").write_bytes(depth16.astype("<u2").tobytes())
     (OUT / "scenes.json").write_text(
         json.dumps({"width": WIDTH, "height": HEIGHT, "scenes": scenes}), encoding="utf-8"
@@ -202,7 +233,7 @@ def main() -> None:
     print(f"{'scene':24} {'mean':>6} {'max':>4} {'>3 levels':>10}  result")
     failed = []
     for item in scenes:
-        reference = render_python(item, albedo, normals, depth16)
+        reference = render_python(item, albedo, normals, depth16, helpers)
         raw = np.frombuffer((OUT / f"gl_{item['name']}.rgba").read_bytes(), dtype=np.uint8)
         webgl = raw.reshape(HEIGHT, WIDTH, 4)[..., :3]
         diff = np.abs(reference.astype(np.int16) - webgl.astype(np.int16))

@@ -32,6 +32,8 @@ class Model(ABC):
 
     def __init__(self) -> None:
         self._model: Any = None
+        # Extra maps a model produces besides its main output (name -> array).
+        self.extras: dict[str, FloatArray] = {}
         self.device = torch.device("cpu")
         self.dtype = torch.float32
 
