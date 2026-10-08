@@ -38,6 +38,7 @@ All require `Authorization: Bearer <token>`.
 | `GET /session/{id}` | sizes, normals method, and per-model time/VRAM stats of a finished session |
 | `GET /session/{id}/{map}` | PNG; map is `albedo_proxy`, `normal`, `depth`, or `mask` |
 | `GET /session/{id}/depth_raw` | depth as raw little-endian uint16, row by row at working size. The preview uses this: browsers decode 16-bit PNGs to 8 bits, which would band the heightfield |
+| `POST /session/{id}/export` | JSON: `lights`, `globals`, `kind` (`relit`, `light_layer`, `per_light`), `format` (`png`, `jpeg`, `tiff`), `bit_depth` (8, 16), `quality`, `blend` (`normal`, `linear`), `alpha`, `target` (full path of the main file). Renders at full resolution and writes the files; returns `job_id`; the job's result lists the files |
 | `GET /jobs/{id}` | job state, result, or error |
 | `GET /jobs/{id}/events` | server-sent events: every progress event so far, then live ones until the job ends |
 | `POST /jobs/{id}/cancel` | cancel; takes effect at the next stage boundary, or immediately during a download |
@@ -90,6 +91,36 @@ DSINE and StableNormal both output X pointing left; the wrappers flip X. This wa
 
 JSON lines in `<data>/logs/`: `main.log` (Electron main and renderer warnings/errors) and `backend.log` (Python, rotating).
 
+## Export (Phase 3)
+
+`pipeline/export.py`, behind `POST /session/{id}/export`. The backend does the rendering, not an off-screen WebGL pass: it has no texture-size limit, writes 16-bit files, and uses the same `shading.py` the shader is checked against.
+
+How it renders: the original file is the albedo at full size; normals and depth are scaled up to it (bilinear); the two maps derived from depth (top-nearby and outline) are made at the working size and scaled up too, as the preview does. Shading runs a strip of about one megapixel of rows at a time, so memory stays bounded; a strip gives exactly the pixels a single pass would (tested). Shadows use 48 steps instead of the preview's 24. If the GPU runs out of memory it retries on the CPU.
+
+What it writes (the original keeps its name; exports get a suffix):
+
+| Choice | Files | Content |
+| --- | --- | --- |
+| Relit image | `name_relit` | the finished picture |
+| Light layer | `name_light` | what the lights add, on black |
+| One layer per light | `name_lights_1_Key`, `_2_Rim`, ... | the light layer split by light; they add up to it exactly |
+| + transparent version | `..._alpha` (PNG or TIFF) | the same layer with straight alpha (alpha = brightest channel), for editors without an Add blend |
+| (automatic) | `..._base` | only when Original light, Ambient, or Exposure is not at its default: the photo with those settings and no lights. The layers belong on top of this, not the untouched photo |
+
+Formats: PNG 8/16-bit, JPEG (quality, 4:4:4 colour), TIFF 8/16-bit (LZW). The file chosen in the save dialog is replaced (the dialog asks); every other file gets ` (2)`, ` (3)` rather than replacing something.
+
+**The promise: base + layer = relit, with the Add (Linear Dodge) blend mode.** Editors disagree on what Add means, so there are two targets:
+
+- **Photoshop, Affinity, Krita** (default): their Add works on the stored, gamma-encoded values. The layer is `encode(relit) − encode(base)`.
+- **GIMP, 32-bit documents**: Add in linear light. The layer is `encode(relit − base)`.
+
+Checked numerically in `tests/test_export.py`: with 16-bit files, base + layer matches the relit export within 3 of 65535 levels for the first target, and within 0.0005 in linear light for the second; per-light layers sum to the light layer within one level per light. A layer can only add light. Because the layer is the exact difference, it also carries the soft clip: its colours can look odd where a channel is near white.
+
+The brief asked for alpha = luminance; brightest channel is used instead, because with luminance a saturated blue or red light would need colour values above 1.
+
+Speed on the build laptop (CPU, 3840 × 4800 portrait): relit with one light 20 s; with one shadowed light 137 s; two 16-bit per-light layers 41 s. **Not yet measured on the RTX 4050.**
+
+Limits: the original is read as 8-bit sRGB (a 16-bit or wide-gamut original is converted first, and no colour profile is embedded); the photoreal exports (difference and multiply layers from the diffusion result) belong to Phase 4.
 ## Normals: comparison and recommendation
 
 Benchmark: `npm run bench` on four photos (portrait, product, interior, landscape) at working size 1536 px. Run twice: on the target PC's GPU (2026-10-07) and on the build laptop's CPU (2026-10-03).

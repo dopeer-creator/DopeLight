@@ -5,11 +5,11 @@ Local, free, Photoshop-style image relighting desktop app. Full brief:
 
 ## Current phase
 
-**Phase 2 (live preview): built on the laptop 2026-10-08, waiting for the user's test.** Do not start Phase 3 until the user says so.
+**Phase 3 (exports): built on the laptop 2026-10-08, waiting for the user's test.** Do not start Phase 4 until the user says so. (Phase 2 was accepted with `go` the same day; the user finds the preview's look not good enough yet and expects Phase 4 to fix that.)
 
 Phase 1 is done: target-PC benchmark 2026-10-07, highest peak VRAM 4326 MB, numbers in `docs/ARCHITECTURE.md`.
 
-Next: Phase 3 — exports (full-res relit image, light-only layer 8/16-bit, per-light layers, formats, filenames). `pipeline/shading.py` already returns `light_layer` and `per_light`; it needs maps upsampled to full resolution.
+Next: Phase 4 — photoreal pass (IC-Light guided by the preview shading, OOM handling, progress/cancel, ratio-based full-res transfer, photoreal light and multiply layers). `shading.shade_scene` gives the hint image; `pipeline/export.py` shows the full-size strip pattern and file writing to reuse. On the laptop IC-Light will run on CPU (minutes per render); judge speed and quality on the target PC.
 
 **The brief file exists only on the laptop** (`C:\Users\Admin\Downloads\relight-app-claude-code-prompt.md`). On the target PC, do not build a phase from memory of it; get the file first.
 
@@ -63,6 +63,8 @@ From repo root:
 - **Lights behind the surface (user asked 2026-10-08 to move lights in front of and behind the subject):** a light whose `z` is below the surface under it switches its shadows from solid shapes to 0.15-thick shells, judged from a dilated depth channel; details in `docs/ARCHITECTURE.md`. The slider is labelled Depth; the gizmo turns dashed when behind.
 - **References (2026-10-08):** `references/` (git-ignored, third-party images) shows the target: Photoshop's Relight panel and a six-way relit portrait. Built from it: Left · Right / Low · High / Close · Far sliders and the rim light for lights behind a shape. The realism of those faces is Phase 4's job.
 - **Git identity:** the user wants commits and pushes to this repo under GitHub id `Prathamgit9` (repo-local `user.name` / `user.email` are set to it on the laptop), not the laptop's global id `prathamcytoxindia-del`.
+- **Export (Phase 3):** backend renders at full size in ~1 MP row strips with `shade_scene(rows=...)`; layers are exact differences so base + layer = relit under Add, with two blend targets (gamma-space editors, linear-light editors); details and measured tolerances in `docs/ARCHITECTURE.md`. File writes go through `cv2.imencode` + Python I/O because OpenCV cannot open non-ASCII paths on Windows. Window filters at full size must be separable (`_window_max`); a square 49-pixel pool on 18 MP took a minute.
+- **Screenshots can be stale:** a covered window or sleeping display stops painting; `dev.ts` forces a repaint before capture. If a capture shows an impossible state, check `page loaded` / `renderer process gone` in the log before suspecting the app.
 - **Lights:** up to 8; spot/directional aim at a `target` point rather than storing a direction; colour stored as linear RGB. Opening an image adds one starter light.
 - **Not built, on purpose:** rembg/isnet mask fallback (BiRefNet lite worked); albedo shading-flattening toggle (brief says only if it visibly helps; revisit in Phase 2 when lighting is visible).
 - **Electron binary:** Electron 44 has no npm install script; `app/package.json` `postinstall` runs `install-electron`. `esbuild` is approved in `allowScripts`.
@@ -81,6 +83,7 @@ From repo root:
 
 - Done 2026-10-07: `npm run setup` picks `cu126` and PyTorch sees the GPU; `npm run bench` peak VRAM per model under 5.5 GB; half-precision sheets look right.
 - Still open: status bar shows the GPU name and free VRAM (needs `npm run dev` on the target PC).
+- Phase 3, still open: export a real photo on the target PC and time it (laptop CPU: 20 s relit, 137 s with a shadowed light, 18 MP); place a light layer over the photo with Add in the user's editor and compare with the relit export.
 - Phase 2, still open: `npm run parity` passes on the NVIDIA driver; `npm run ui-smoke` passes; frame times with `RELIGHT_BENCH=1` (laptop Intel graphics: 8 lights with shadows 47 ms at 1080p); dragging feels smooth on a 4K photo.
 
 ## Rules carried from the brief

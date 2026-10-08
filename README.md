@@ -2,7 +2,7 @@
 
 Local, free image relighting for Windows. Open an image, add virtual lights, drag them, and export the relit image or a light-only layer. Everything runs on your own PC; no accounts, no cloud, no telemetry.
 
-**Status:** Phase 2 of 6. You can open an image and relight it live with up to 8 lights. Export and the photoreal pass come in the next phases.
+**Status:** Phase 3 of 6. You can open an image, relight it live with up to 8 lights, and export the result or light-only layers at full size. The photoreal pass comes next.
 
 ## Requirements
 
@@ -30,6 +30,16 @@ npm run dev
 - **Drag** a light's dot to move it. **Mouse wheel** over the picture (or the Depth slider) moves the selected light toward or away from you. Below the surface under it, the light is behind that part of the photo: the dot turns dashed, and it lights the background and rims edges.
 - Spot and Sun lights have a second small ring: where the light aims.
 - **L** adds a light, **Del** deletes the selected one, **arrow keys** nudge it (Shift for bigger steps), **Ctrl+Z / Ctrl+Y** undo and redo, hold **C** to see the original. **Split** shows original and relit side by side.
+
+## Exporting
+
+**Export** (or Ctrl+E) saves at the original image's full size:
+
+- **Relit image**: the finished picture.
+- **Light layer**: only what the lights add, on black. Put it over your photo in an editor and set the layer's blend mode to **Add** (Photoshop calls it Linear Dodge (Add)). Pick who it is made for: Photoshop / Affinity / Krita, or GIMP / 32-bit documents; the two add colours differently.
+- **One layer per light**: the same, split by light, so you can rebalance lights later.
+
+Formats: PNG (8 or 16-bit), JPEG, TIFF. A layer can only add light. If you changed Original light, Ambient, or Exposure, the layers belong on the adjusted picture, which is saved next to them as `_base`. The original file is never changed.
 
 ## Benchmark the preprocess step
 
