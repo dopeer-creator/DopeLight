@@ -1,14 +1,16 @@
-import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app, BrowserWindow, ipcMain, shell } from 'electron'
 import { APP_NAME } from '@shared/constants'
 import { IPC } from '@shared/types'
 import { BackendProcess } from './backend'
+import { attachDevHelpers, parityFolder, registerDevHandlers } from './dev'
 import { log } from './logger'
 
 app.setName(APP_NAME)
 
 const backend = new BackendProcess()
+/** Parity runs render a fixture with the shader and quit; no backend, no visible window. */
+const parityRun = parityFolder() !== undefined
 
 function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
@@ -28,7 +30,7 @@ function createWindow(): BrowserWindow {
     }
   })
 
-  window.once('ready-to-show', () => window.show())
+  if (!parityRun) window.once('ready-to-show', () => window.show())
 
   // Links never open inside the app window.
   window.webContents.setWindowOpenHandler(({ url }) => {
@@ -42,28 +44,15 @@ function createWindow(): BrowserWindow {
     }
   })
 
+  const hash = parityRun ? 'parity' : ''
   const devUrl = process.env['ELECTRON_RENDERER_URL']
-  if (!app.isPackaged && devUrl) void window.loadURL(devUrl)
-  else void window.loadFile(join(__dirname, '../renderer/index.html'))
+  if (!app.isPackaged && devUrl) void window.loadURL(`${devUrl}#${hash}`)
+  else void window.loadFile(join(__dirname, '../renderer/index.html'), { hash })
 
   return window
 }
 
-/** Dev helper: RELIGHT_SCREENSHOT=<file.png> saves a capture a few seconds after each page load. */
-function scheduleScreenshot(window: BrowserWindow): void {
-  const target = process.env['RELIGHT_SCREENSHOT']
-  if (!target || app.isPackaged) return
-  window.webContents.on('did-finish-load', () => {
-    setTimeout(() => {
-      void window.webContents.capturePage().then((image) => {
-        writeFileSync(target, image.toPNG())
-        log('INFO', 'main', `screenshot saved to ${target}`)
-      })
-    }, 6000)
-  })
-}
-
-if (!app.requestSingleInstanceLock()) {
+if (!parityRun && !app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   app.on('second-instance', () => {
@@ -81,9 +70,10 @@ if (!app.requestSingleInstanceLock()) {
         window.webContents.send(IPC.backendChanged, info)
       }
     })
+    registerDevHandlers()
 
-    scheduleScreenshot(createWindow())
-    void backend.start()
+    attachDevHelpers(createWindow())
+    if (!parityRun) void backend.start()
   })
 
   app.on('window-all-closed', () => app.quit())

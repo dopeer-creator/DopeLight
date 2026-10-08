@@ -7,6 +7,13 @@ const api: RelightApi = {
     const listener = (_event: IpcRendererEvent, info: BackendInfo): void => callback(info)
     ipcRenderer.on(IPC.backendChanged, listener)
     return () => ipcRenderer.removeListener(IPC.backendChanged, listener)
+  },
+  dev: {
+    automation: () => ipcRenderer.invoke(IPC.devAutomation),
+    ready: () => ipcRenderer.send(IPC.devReady),
+    parityLoad: () => ipcRenderer.invoke(IPC.parityLoad),
+    parityResult: (name, pixels) => ipcRenderer.invoke(IPC.parityResult, name, pixels),
+    parityFinish: (error) => ipcRenderer.invoke(IPC.parityFinish, error)
   }
 }
 
