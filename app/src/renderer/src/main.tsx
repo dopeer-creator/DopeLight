@@ -1,10 +1,25 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { App } from './App'
+import { runParity } from './parity'
+import { useLightsStore } from './stores/lightsStore'
+import { useSessionStore } from './stores/sessionStore'
+import { useViewStore } from './stores/viewStore'
 import './styles.css'
 
-createRoot(document.getElementById('root')!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>
-)
+// Development only: lets test scripts (scripts/ui-smoke.browser.js) read the app's state.
+if (import.meta.env.DEV) {
+  Object.assign(window, {
+    __relight: { lights: useLightsStore, view: useViewStore, session: useSessionStore }
+  })
+}
+
+if (window.location.hash === '#parity') {
+  void runParity()
+} else {
+  createRoot(document.getElementById('root')!).render(
+    <StrictMode>
+      <App />
+    </StrictMode>
+  )
+}

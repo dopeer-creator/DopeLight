@@ -1,6 +1,8 @@
-import { Cpu, Gauge } from 'lucide-react'
+import { Cpu, Gauge, Timer } from 'lucide-react'
 import type { BackendState, GpuStatus } from '@shared/types'
 import { useBackendStore } from '../stores/backendStore'
+import { useSessionStore } from '../stores/sessionStore'
+import { useViewStore } from '../stores/viewStore'
 
 const STATE_LABEL: Record<BackendState, string> = {
   starting: 'Starting backend…',
@@ -21,8 +23,13 @@ export function StatusBar(): React.JSX.Element {
   const info = useBackendStore((store) => store.info)
   const health = useBackendStore((store) => store.health)
   const healthError = useBackendStore((store) => store.healthError)
+  const status = useSessionStore((store) => store.status)
+  const message = useSessionStore((store) => store.message)
+  const maps = useSessionStore((store) => store.maps)
+  const frameMs = useViewStore((store) => store.frameMs)
 
   const detail = info.error ?? (info.state === 'running' ? healthError : null)
+  const stage = status === 'working' ? message || 'Working' : status === 'ready' ? 'Ready' : 'Idle'
 
   return (
     <footer className="status-bar">
@@ -48,7 +55,16 @@ export function StatusBar(): React.JSX.Element {
       )}
 
       <span className="status-spacer" />
-      <span className="status-item status-item--muted">Idle</span>
+      {maps !== null && frameMs !== null && (
+        <span
+          className="status-item status-item--muted"
+          title="Time the graphics card needs to draw one preview frame. Under 16 ms is 60 frames per second."
+        >
+          <Timer size={13} />
+          {maps.width} × {maps.height} · {frameMs.toFixed(1)} ms per frame
+        </span>
+      )}
+      <span className="status-item status-item--muted">{stage}</span>
     </footer>
   )
 }
