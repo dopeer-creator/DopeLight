@@ -5,11 +5,13 @@ Local, free, Photoshop-style image relighting desktop app. Full brief:
 
 ## Current phase
 
-**Phase 3 (exports): built on the laptop 2026-10-08, waiting for the user's test.** Do not start Phase 4 until the user says so. (Phase 2 was accepted with `go` the same day; the user finds the preview's look not good enough yet and expects Phase 4 to fix that.)
+**Phase 4 (photoreal pass): in progress on the laptop, started 2026-10-08 with the user's `go`.** Phase 3 was tested by the user (light layer + photo reproduced the relit export). Their complaint is the look: "doesnt look good yet or accurate". Preview fixes for that are in; Phase 4 is the real answer and its quality is the thing to judge.
+
+Phase 4 state: code written and unit-tested with a stub model (`models/iclight.py`, `pipeline/photoreal.py`, `export_photoreal` in `pipeline/export.py`, endpoints `POST /session/{id}/render` and `GET /session/{id}/render/{rid}`, app `renderStore` + `RenderDialog` + Preview/Photoreal toggle + export source). **A real IC-Light render was run on the laptop on 2026-10-08** (portrait, CPU, 384 px): natural-looking light on skin, clearly better than the preview. The raw model output repainted the face, jacket colour, and backdrop, so the ratio transfer was tightened (brightness in full, colour limited, subject only); see `docs/ARCHITECTURE.md`. Phase 4 is built and waiting for the user's test; do not start Phase 5 until they say so. Not yet run on the target PC (speed, VRAM at 768 px with the detail pass).
 
 Phase 1 is done: target-PC benchmark 2026-10-07, highest peak VRAM 4326 MB, numbers in `docs/ARCHITECTURE.md`.
 
-Next: Phase 4 — photoreal pass (IC-Light guided by the preview shading, OOM handling, progress/cancel, ratio-based full-res transfer, photoreal light and multiply layers). `shading.shade_scene` gives the hint image; `pipeline/export.py` shows the full-size strip pattern and file writing to reuse. On the laptop IC-Light will run on CPU (minutes per render); judge speed and quality on the target PC.
+Next after Phase 4: Phase 5 — product polish (glass UI pass, first-run setup that downloads models up front, settings, `.relight` project save/load, error surfaces, logs).
 
 **The brief file exists only on the laptop** (`C:\Users\Admin\Downloads\relight-app-claude-code-prompt.md`). On the target PC, do not build a phase from memory of it; get the file first.
 
@@ -66,6 +68,7 @@ From repo root:
 - **Export (Phase 3):** backend renders at full size in ~1 MP row strips with `shade_scene(rows=...)`; layers are exact differences so base + layer = relit under Add, with two blend targets (gamma-space editors, linear-light editors); details and measured tolerances in `docs/ARCHITECTURE.md`. File writes go through `cv2.imencode` + Python I/O because OpenCV cannot open non-ASCII paths on Windows. Window filters at full size must be separable (`_window_max`); a square 49-pixel pool on 18 MP took a minute.
 - **Screenshots can be stale:** a covered window or sleeping display stops painting; `dev.ts` forces a repaint before capture. If a capture shows an impossible state, check `page loaded` / `renderer process gone` in the log before suspecting the app.
 - **Preview quality fixes (2026-10-08, after the user's first real test looked bad):** lights do not reach the sky (reach map from raw inverse depth), new lights have specular 0, scene settings Smooth surface (0.3) and Even light (0.5). Table in `docs/ARCHITECTURE.md`. `GlobalSettings` gained `smoothing` and `flatten`; anything loading saved settings must merge defaults (`lightsStore.reset` does). The user's verdict before these fixes: the lighting "doesnt look good yet or accurate"; Phase 4 is expected to close that gap.
+- **Photoreal (Phase 4):** IC-Light `fc` weights are offsets merged onto Realistic Vision 5.1 (SD 1.5), ported from the official `gradio_demo.py`. The whole photo is the condition (no background removal, so the scene is kept); the hint is the preview's own relit shading at diffusion size and becomes the starting latent; "Follow lights" maps to denoise 0.95 (loose) .. 0.5 (tight). Only the lighting ratio relit/original is kept (guided filter, bounded 0.05..12) and multiplied into the full-size original, so detail and identity stay. Renders live in `<session>/renders/<id>/` (`ratio.npy`, `preview.jpg`, plus `hint.jpg` and `diffusion.jpg` for inspection). OOM: retry at 0.8x and 0.64x size with sequential offload. Models: 3.7 GB (`specs.PHOTOREAL`).
 - **Lights:** up to 8; spot/directional aim at a `target` point rather than storing a direction; colour stored as linear RGB. Opening an image adds one starter light.
 - **Not built, on purpose:** rembg/isnet mask fallback (BiRefNet lite worked); albedo shading-flattening toggle (brief says only if it visibly helps; revisit in Phase 2 when lighting is visible).
 - **Electron binary:** Electron 44 has no npm install script; `app/package.json` `postinstall` runs `install-electron`. `esbuild` is approved in `allowScripts`.
@@ -84,6 +87,7 @@ From repo root:
 
 - Done 2026-10-07: `npm run setup` picks `cu126` and PyTorch sees the GPU; `npm run bench` peak VRAM per model under 5.5 GB; half-precision sheets look right.
 - Still open: status bar shows the GPU name and free VRAM (needs `npm run dev` on the target PC).
+- Phase 4, still open: a photoreal render at the default size with the detail pass on the RTX 4050: time, peak VRAM under 5.5 GB (the job result reports both), and whether the look holds up on the user's own photos.
 - Phase 3, still open: export a real photo on the target PC and time it (laptop CPU: 20 s relit, 137 s with a shadowed light, 18 MP); place a light layer over the photo with Add in the user's editor and compare with the relit export.
 - Phase 2, still open: `npm run parity` passes on the NVIDIA driver; `npm run ui-smoke` passes; frame times with `RELIGHT_BENCH=1` (laptop Intel graphics: 8 lights with shadows 47 ms at 1080p); dragging feels smooth on a 4K photo.
 

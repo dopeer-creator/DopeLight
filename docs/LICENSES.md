@@ -14,13 +14,16 @@ Checked on 2026-10-03 against each model's own repository. Nothing here is bundl
 | BiRefNet lite | subject mask | MIT | allowed | [ZhengPeng7/BiRefNet_lite](https://huggingface.co/ZhengPeng7/BiRefNet_lite) |
 | DSINE | surface normals (default) | Imperial College London research licence | **forbidden** | code: [hugoycj/DSINE-hub](https://github.com/hugoycj/DSINE-hub) (the torch-hub build linked from the [official repo](https://github.com/baegwangbin/DSINE)); weights: [camenduru/DSINE](https://huggingface.co/camenduru/DSINE) |
 | StableNormal turbo (YOSO v0.3) | surface normals (optional) | Apache-2.0 | allowed | code: [Stable-X/StableNormal](https://github.com/Stable-X/StableNormal); weights: [Stable-X/yoso-normal-v0-3](https://huggingface.co/Stable-X/yoso-normal-v0-3) |
-| IC-Light (SD 1.5 based) | photoreal relight | to verify in Phase 4 | to verify | [lllyasviel/ic-light](https://huggingface.co/lllyasviel/ic-light) |
+| IC-Light (`fc` weights) | photoreal relight | Apache-2.0 (the [IC-Light repository](https://github.com/lllyasviel/IC-Light); the weights page states no licence of its own) | allowed | [lllyasviel/ic-light](https://huggingface.co/lllyasviel/ic-light) |
+| Realistic Vision 5.1 (Stable Diffusion 1.5) | base model IC-Light is applied to | CreativeML OpenRAIL-M | allowed, with the licence's use restrictions (no illegal or harmful use; the same terms must be passed on if the model is redistributed) | [stablediffusionapi/realistic-vision-v51](https://huggingface.co/stablediffusionapi/realistic-vision-v51) |
 
 ### DSINE licence, in plain words
 
 The licence text (kept next to the downloaded code as `LICENSE`) says the software may be used "solely for non-commercial, internal or academic research purposes". It also forbids passing it on to others, so Relight must never ship DSINE's code or weights inside an installer. Downloading it to your own PC for your own non-commercial use is what the licence permits.
 
 The DSINE weights file is a PyTorch pickle from a third-party mirror. It is loaded with `weights_only=True`, which refuses to run code hidden in the file.
+
+IC-Light's official demo removes the background with BRIA RMBG 1.4, which is non-commercial. Relight does not use it: the whole photo is relit, and the subject mask comes from BiRefNet (MIT).
 
 ### Not used
 

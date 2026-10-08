@@ -38,7 +38,9 @@ All require `Authorization: Bearer <token>`.
 | `GET /session/{id}` | sizes, normals method, and per-model time/VRAM stats of a finished session |
 | `GET /session/{id}/{map}` | PNG; map is `albedo_proxy`, `normal`, `normal_smooth`, `depth`, `mask`, or `aux` |
 | `GET /session/{id}/depth_raw` | depth as raw little-endian uint16, row by row at working size. The preview uses this: browsers decode 16-bit PNGs to 8 bits, which would band the heightfield |
-| `POST /session/{id}/export` | JSON: `lights`, `globals`, `kind` (`relit`, `light_layer`, `per_light`), `format` (`png`, `jpeg`, `tiff`), `bit_depth` (8, 16), `quality`, `blend` (`normal`, `linear`), `alpha`, `target` (full path of the main file). Renders at full resolution and writes the files; returns `job_id`; the job's result lists the files |
+| `POST /session/{id}/export` | JSON: `lights`, `globals`, `kind` (`relit`, `light_layer`, `per_light`), `format` (`png`, `jpeg`, `tiff`), `bit_depth` (8, 16), `quality`, `blend` (`normal`, `linear`), `alpha`, `render_id` (optional: export that photoreal render instead of the preview; kinds then are `relit`, `light_layer`, `multiply`), `target` (full path of the main file). Renders at full resolution and writes the files; returns `job_id`; the job's result lists the files |
+| `POST /session/{id}/render` | photoreal pass. JSON: `lights`, `globals`, `prompt`, `steps` (4..60), `adherence` (0..1), `seed`, `long_edge` (256..1280, default 768), `highres`. Returns `job_id`; the job's result holds `render_id`, the size used, seconds, peak VRAM, and a note if it had to shrink |
+| `GET /session/{id}/render/{rid}` | that render applied to the photo, at screen size (JPEG) |
 | `GET /jobs/{id}` | job state, result, or error |
 | `GET /jobs/{id}/events` | server-sent events: every progress event so far, then live ones until the job ends |
 | `POST /jobs/{id}/cancel` | cancel; takes effect at the next stage boundary, or immediately during a download |
@@ -91,6 +93,31 @@ DSINE and StableNormal both output X pointing left; the wrappers flip X. This wa
 
 JSON lines in `<data>/logs/`: `main.log` (Electron main and renderer warnings/errors) and `backend.log` (Python, rotating).
 
+## Photoreal pass (Phase 4)
+
+`models/iclight.py` and `pipeline/photoreal.py`, behind `POST /session/{id}/render`.
+
+**Model.** IC-Light's `fc` weights are differences added onto a Stable Diffusion 1.5 model (Realistic Vision 5.1, the base its own demo uses). The UNet gets four extra input channels that carry the photo. Ported from the official `gradio_demo.py`. About 3.7 GB of downloads.
+
+**How the user's lights steer it.** The demo starts the diffusion from a plain left/right/top/bottom gradient. Here the start is the **preview's own shading** of the scene (`shade_scene` at the diffusion size): the same lights, in the same places. "Follow lights" sets how far the model may move from that start (denoise 0.95 at 0, 0.5 at 1). The whole photo is the condition, with no background removal, so the model keeps the scene instead of inventing one around a cut-out.
+
+**What is taken from the result.** The model relights well, but it also repaints: on the first test it changed the face, turned a blue jacket teal, and replaced the backdrop with invented bokeh. So the result is never shown as it is. `lighting_ratio` keeps:
+
+- the change in **brightness** (relit / original luminance), smoothed with a guided filter so the original's edges stay;
+- only a **broad, limited change in colour**: per channel at most 1.5 times more or less than brightness, blurred over 4 % of the width. A light tints a region; it does not recolour objects;
+- and only **on the subject** (the Phase 1 mask, feathered). Elsewhere the ratio comes from the preview shading. IC-Light is a foreground relighter. If the mask covers under 2 % of the picture, the model's light is used everywhere.
+
+That ratio is scaled up and multiplied into the full-size original in linear light (bounded to 0.05..12). Texture, text, and identity come from the original; only light comes from the model.
+
+**Memory and failure.** On the GPU: half precision, attention slicing, VAE tiling, model CPU offload. On out-of-memory it retries at 0.8 and 0.64 of the size with sequential offload, and says so in the result. Without a GPU the diffusion size is capped at 512 px, also noted. Cancel is checked at every denoising step.
+
+**Stored per render** in `<session>/renders/<id>/`: `ratio.npy` (half float, diffusion size; exports are rebuilt from it at any bit depth), `preview.jpg` for the app, and `hint.jpg` and `diffusion.jpg` (the start picture and the raw model output) for inspection.
+
+**Exports** (`export_photoreal`): the relit image; a light layer `encode(relit) − encode(original)` (or the linear form), which cannot hold the shadows the render added; and a **multiply layer**: the ratio itself, stored so that 0.5 means no change, for the Multiply blend in a linear (32-bit) document. It holds both brightening (up to 2 times) and shadows.
+
+**Measured on the build laptop (CPU, no GPU), 2026-10-08, portrait sample:** 384 × 448, 12 steps, no detail pass: 131 s. Through the app, 384 × 512, 8 steps: 101 s. Judged by eye: skin shading and falloff look natural and clearly better than the preview; the face, name tag, and backdrop stay the original's. **Not yet run on the RTX 4050:** speed, peak VRAM at 768 px with the detail pass, and how half precision looks are unknown.
+
+**Limits.** Results depend on the seed. Strongly coloured lights come out less saturated than in the preview (the colour limit). The background only gets the preview's light. Low diffusion sizes (as on this laptop) give soft light shapes.
 ## Export (Phase 3)
 
 `pipeline/export.py`, behind `POST /session/{id}/export`. The backend does the rendering, not an off-screen WebGL pass: it has no texture-size limit, writes 16-bit files, and uses the same `shading.py` the shader is checked against.
