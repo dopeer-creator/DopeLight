@@ -73,13 +73,25 @@ class JobStarted(BaseModel):
 class ExportRequest(BaseModel):
     lights: list[dict[str, Any]]
     globals: dict[str, float]
-    kind: Literal["relit", "light_layer", "per_light"] = "relit"
+    kind: Literal["relit", "light_layer", "per_light", "multiply"] = "relit"
+    render_id: str | None = None  # export this photoreal render instead of the live preview
     format: Literal["png", "jpeg", "tiff"] = "png"
     bit_depth: Literal[8, 16] = 8
     quality: int = Field(92, ge=1, le=100)
     blend: Literal["normal", "linear"] = "normal"
     alpha: bool = False
     target: str  # full path of the main file to write
+
+
+class RenderRequest(BaseModel):
+    lights: list[dict[str, Any]]
+    globals: dict[str, float]
+    prompt: str = "beautiful lighting, natural"
+    steps: int = Field(25, ge=4, le=60)
+    adherence: float = Field(0.5, ge=0.0, le=1.0)
+    seed: int = 12345
+    long_edge: int = Field(768, ge=256, le=1280)
+    highres: bool = True
 
 
 class SessionResponse(BaseModel):
@@ -239,19 +251,52 @@ def create_app(token: str, data_root: Path | None = None) -> FastAPI:
             )
 
         def work(job: Job) -> dict[str, Any]:
-            from relight_backend.pipeline.export import ExportOptions, export
+            from relight_backend.pipeline.export import ExportOptions, export, export_photoreal
             from relight_backend.pipeline.shading import GlobalSettings, Light
 
             options = ExportOptions(
                 kind=request.kind, format=request.format, bit_depth=request.bit_depth,
                 quality=request.quality, blend=request.blend, alpha=request.alpha,
             )
+            if request.render_id is not None:
+                files = export_photoreal(store, session_id, request.render_id, options, target, job)
+                return {"files": [str(path) for path in files]}
             lights = [Light.from_json(entry) for entry in request.lights]
             settings = GlobalSettings.from_json(request.globals)
             files = export(store, session_id, lights, settings, options, target, job)
             return {"files": [str(path) for path in files]}
 
         return JobStarted(job_id=jobs.submit("export", work).id)
+
+    @app.post("/session/{session_id}/render", dependencies=protected)
+    def render_session(session_id: str, request: RenderRequest) -> JobStarted:
+        """Photoreal pass (IC-Light); the job's result holds `render_id`."""
+        if store.load_meta(session_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such session, or not finished yet")
+
+        def work(job: Job) -> dict[str, Any]:
+            from relight_backend.pipeline.photoreal import RenderOptions, render
+            from relight_backend.pipeline.shading import GlobalSettings, Light
+
+            options = RenderOptions(
+                prompt=request.prompt, steps=request.steps, adherence=request.adherence,
+                seed=request.seed, long_edge=request.long_edge, highres=request.highres,
+            )
+            lights = [Light.from_json(entry) for entry in request.lights]
+            settings = GlobalSettings.from_json(request.globals)
+            return render(store, session_id, lights, settings, options, job)
+
+        return JobStarted(job_id=jobs.submit("render", work).id)
+
+    @app.get("/session/{session_id}/render/{render_id}", dependencies=protected)
+    def render_preview(session_id: str, render_id: str) -> FileResponse:
+        """The render applied to the photo, at screen size (JPEG)."""
+        from relight_backend.pipeline.photoreal import PREVIEW_FILE, render_folder
+
+        folder = render_folder(store, session_id, render_id)
+        if folder is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such render")
+        return FileResponse(folder / PREVIEW_FILE, media_type="image/jpeg")
 
     @app.get("/jobs/{job_id}", dependencies=protected)
     def job_status(job_id: str) -> dict[str, Any]:

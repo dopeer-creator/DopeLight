@@ -52,6 +52,7 @@ from relight_backend.pipeline.shading import (
     outline_map,
     prepare_scene,
     shade_scene,
+    srgb_to_linear,
 )
 from relight_backend.utils.device import pick_device, release_memory
 from relight_backend.utils.image_io import (
@@ -66,7 +67,9 @@ from relight_backend.utils.image_io import (
 
 log = logging.getLogger(__name__)
 
-KINDS = ("relit", "light_layer", "per_light")
+KINDS = ("relit", "light_layer", "per_light", "multiply")
+PHOTOREAL_KINDS = ("relit", "light_layer", "multiply")
+MULTIPLY_ONE = 0.5  # in a multiply layer this stored value means "times 1" (no change)
 FORMATS = {"png": ".png", "jpeg": ".jpg", "tiff": ".tif"}
 BLENDS = ("normal", "linear")
 EXPORT_SHADOW_STEPS = 48  # the preview uses 24; an export can afford smoother shadows
@@ -164,6 +167,8 @@ def export(
     folder, meta = store.folder(session_id), store.load_meta(session_id)
     if folder is None or meta is None:
         raise KeyError(f"No finished session: {session_id}")
+    if options.kind == "multiply":
+        raise ValueError("A multiply layer needs a photoreal render")
 
     reporter.report("export", 0.02, "Reading the full-size image")
     original = load_image(folder / ORIGINAL_FILE)
@@ -270,5 +275,68 @@ def export(
         save_image(arrays[key], path, file_format, options.quality)
         written.append(path)
     log.info("exported %s", [str(path) for path in written])
+    reporter.report("finish", 1.0, f"Saved {len(written)} file{'s' if len(written) != 1 else ''}")
+    return written
+
+
+def export_photoreal(
+    store: SessionStore,
+    session_id: str,
+    render_id: str,
+    options: ExportOptions,
+    target: Path,
+    reporter: Reporter,
+) -> list[Path]:
+    """Write files from a photoreal render (pipeline/photoreal.py) at full size.
+
+    - relit        the original times the render's lighting ratio.
+    - light_layer  what got brighter, on black, for the Add blend mode. Shadows the
+                   render added cannot be in it: a layer that adds cannot darken.
+    - multiply     the lighting ratio itself, for the Multiply blend mode in a
+                   linear-light (32-bit) document. Stored value 0.5 means "no
+                   change", 1.0 means twice as bright; ratios above 2 are clipped.
+                   Unlike the light layer it carries the new shadows too.
+    """
+    from relight_backend.pipeline import photoreal
+
+    folder = store.folder(session_id)
+    renders = photoreal.render_folder(store, session_id, render_id)
+    if folder is None or renders is None:
+        raise KeyError(f"No such render: {render_id}")
+    if options.kind not in PHOTOREAL_KINDS:
+        raise ValueError(f"A photoreal render cannot be exported as {options.kind!r}")
+
+    reporter.report("export", 0.05, "Reading the full-size image")
+    original = np.asarray(load_image(folder / ORIGINAL_FILE), dtype=np.float32) / 255.0
+    ratio = np.load(renders / photoreal.RATIO_FILE).astype(np.float32)
+    height, width = original.shape[:2]
+
+    reporter.check_cancel()
+    reporter.report("export", 0.3, "Applying the light")
+    if options.kind == "multiply":
+        full_ratio = np.asarray(cv2.resize(ratio, (width, height), interpolation=cv2.INTER_LINEAR))
+        encoded = torch.from_numpy(np.clip(full_ratio * MULTIPLY_ONE, 0.0, 1.0))
+    else:
+        relit = torch.from_numpy(photoreal.apply_ratio(original, ratio))
+        base = srgb_to_linear(torch.from_numpy(original))
+        if options.kind == "relit":
+            encoded = linear_to_srgb(relit)
+        elif options.blend == "normal":
+            encoded = (linear_to_srgb(relit) - linear_to_srgb(base)).clamp_min(0.0)
+        else:
+            encoded = linear_to_srgb((relit - base).clamp_min(0.0))
+
+    suffix = FORMATS[options.format]
+    target = target.with_suffix(suffix)
+    written = [target]
+    reporter.check_cancel()
+    reporter.report("export", 0.8, "Writing files")
+    save_image(_quantize(encoded, options.depth), target, options.format, options.quality)
+    if options.alpha and options.kind == "light_layer":
+        alpha_suffix = ".png" if options.format == "jpeg" else suffix
+        alpha_path = unique_path(target.with_name(f"{target.stem}_alpha{alpha_suffix}"))
+        save_image(_quantize(_with_alpha(encoded), options.depth), alpha_path,
+                   "png" if alpha_suffix == ".png" else options.format)
+        written.append(alpha_path)
     reporter.report("finish", 1.0, f"Saved {len(written)} file{'s' if len(written) != 1 else ''}")
     return written

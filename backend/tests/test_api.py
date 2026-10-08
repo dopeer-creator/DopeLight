@@ -64,7 +64,7 @@ def test_every_endpoint_requires_token(client: TestClient) -> None:
 def test_health_lists_models(client: TestClient) -> None:
     models = client.get("/health", headers=AUTH).json()["models"]
     assert set(models) == {"birefnet_lite", "depth_anything_v2_small", "dsine",
-                           "stablenormal_turbo"}
+                           "stablenormal_turbo", "sd15_realistic_vision", "ic_light_fc"}
     assert not any(models.values())  # nothing downloaded in the temp data folder
 
 
