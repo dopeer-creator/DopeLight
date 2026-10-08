@@ -20,7 +20,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
@@ -28,7 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from PIL import Image, UnidentifiedImageError
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from relight_backend.constants import APP_NAME, APP_VERSION, HOST, TOKEN_ENV
 from relight_backend.jobs import Job, JobManager
@@ -68,6 +68,18 @@ class EnsureRequest(BaseModel):
 
 class JobStarted(BaseModel):
     job_id: str
+
+
+class ExportRequest(BaseModel):
+    lights: list[dict[str, Any]]
+    globals: dict[str, float]
+    kind: Literal["relit", "light_layer", "per_light"] = "relit"
+    format: Literal["png", "jpeg", "tiff"] = "png"
+    bit_depth: Literal[8, 16] = 8
+    quality: int = Field(92, ge=1, le=100)
+    blend: Literal["normal", "linear"] = "normal"
+    alpha: bool = False
+    target: str  # full path of the main file to write
 
 
 class SessionResponse(BaseModel):
@@ -214,6 +226,32 @@ def create_app(token: str, data_root: Path | None = None) -> FastAPI:
         if path is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No such map")
         return FileResponse(path, media_type="image/png")
+
+    @app.post("/session/{session_id}/export", dependencies=protected)
+    def export_session(session_id: str, request: ExportRequest) -> JobStarted:
+        """Render at full resolution and write files next to `target`. See pipeline/export.py."""
+        if store.load_meta(session_id) is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such session, or not finished yet")
+        target = Path(request.target)
+        if not target.is_absolute() or not target.parent.is_dir():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST, "The folder to save into does not exist"
+            )
+
+        def work(job: Job) -> dict[str, Any]:
+            from relight_backend.pipeline.export import ExportOptions, export
+            from relight_backend.pipeline.shading import GlobalSettings, Light
+
+            options = ExportOptions(
+                kind=request.kind, format=request.format, bit_depth=request.bit_depth,
+                quality=request.quality, blend=request.blend, alpha=request.alpha,
+            )
+            lights = [Light.from_json(entry) for entry in request.lights]
+            settings = GlobalSettings.from_json(request.globals)
+            files = export(store, session_id, lights, settings, options, target, job)
+            return {"files": [str(path) for path in files]}
+
+        return JobStarted(job_id=jobs.submit("export", work).id)
 
     @app.get("/jobs/{job_id}", dependencies=protected)
     def job_status(job_id: str) -> dict[str, Any]:

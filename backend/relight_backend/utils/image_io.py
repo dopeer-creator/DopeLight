@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -51,24 +52,63 @@ def save_gray8(array: FloatArray, path: Path) -> None:
     Image.fromarray(data, mode="L").save(path)
 
 
+# OpenCV's own imread/imwrite cannot open paths with non-ASCII characters on
+# Windows (a user name is enough), so files go through Python and OpenCV only
+# encodes and decodes bytes.
+def _write(path: Path, extension: str, data: np.ndarray[Any, Any], params: list[int]) -> None:
+    ok, encoded = cv2.imencode(extension, data, params)
+    if not ok:
+        raise OSError(f"Could not encode {path}")
+    path.write_bytes(encoded.tobytes())
+
+
+def _read_unchanged(path: Path) -> np.ndarray[Any, Any]:
+    data = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if data is None:
+        raise OSError(f"Could not read {path}")
+    return data
+
+
 def save_gray16(array: FloatArray, path: Path) -> None:
-    data = np.clip(array * 65535.0 + 0.5, 0, 65535).astype(np.uint16)
-    if not cv2.imwrite(str(path), data):
-        raise OSError(f"Could not write {path}")
+    _write(path, ".png", np.clip(array * 65535.0 + 0.5, 0, 65535).astype(np.uint16), [])
 
 
 def load_gray16(path: Path) -> FloatArray:
-    data = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-    if data is None:
-        raise OSError(f"Could not read {path}")
-    return np.asarray(data, dtype=np.float32) / 65535.0
+    return np.asarray(_read_unchanged(path), dtype=np.float32) / 65535.0
+
+
+def save_image(
+    array: np.ndarray[Any, Any], path: Path, file_format: str, quality: int = 92
+) -> None:
+    """Write RGB or RGBA, uint8 or uint16, as "png", "jpeg" (8-bit RGB only) or "tiff"."""
+    channels = array.shape[2]
+    if file_format == "jpeg" and (array.dtype != np.uint8 or channels != 3):
+        raise ValueError("JPEG holds 8-bit RGB only")
+    ordered = cv2.cvtColor(array, cv2.COLOR_RGBA2BGRA if channels == 4 else cv2.COLOR_RGB2BGR)
+    if file_format == "jpeg":
+        # 4:4:4 chroma: no colour smearing on thin light edges.
+        params = [cv2.IMWRITE_JPEG_QUALITY, quality,
+                  cv2.IMWRITE_JPEG_SAMPLING_FACTOR, cv2.IMWRITE_JPEG_SAMPLING_FACTOR_444]
+        _write(path, ".jpg", ordered, params)
+    elif file_format == "tiff":
+        _write(path, ".tif", ordered, [cv2.IMWRITE_TIFF_COMPRESSION, 5])  # 5 = LZW, lossless
+    elif file_format == "png":
+        _write(path, ".png", ordered, [])
+    else:
+        raise ValueError(f"Unknown format {file_format!r}")
+
+
+def load_image_array(path: Path) -> np.ndarray[Any, Any]:
+    """Read a file written by save_image back as RGB(A), keeping its bit depth."""
+    data = _read_unchanged(path)
+    return cv2.cvtColor(data, cv2.COLOR_BGRA2RGBA if data.shape[2] == 4 else cv2.COLOR_BGR2RGB)
 
 
 def load_gray16_bytes(path: Path) -> bytes:
     """The 16-bit values as raw little-endian uint16, row by row."""
-    data = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
-    if data is None or data.dtype != np.uint16:
-        raise OSError(f"Could not read 16-bit image {path}")
+    data = _read_unchanged(path)
+    if data.dtype != np.uint16:
+        raise OSError(f"Not a 16-bit image: {path}")
     return data.astype("<u2").tobytes()
 
 

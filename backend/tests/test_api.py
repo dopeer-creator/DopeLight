@@ -104,6 +104,38 @@ def test_depth_raw_serves_16_bit_values(client: TestClient, tmp_path: Path) -> N
     assert client.get("/session/0123456789abcdef0123/depth_raw", headers=AUTH).status_code == 404
 
 
+def test_export_writes_files_and_reports_them(tmp_path: Path) -> None:
+    from test_export import make_session
+
+    _store, session_id, _original = make_session(tmp_path / "sessions")
+    api = TestClient(create_app(TOKEN, data_root=tmp_path / "sessions"))
+    light = {
+        "id": "a", "name": "Key", "enabled": True, "type": "point",
+        "position": {"x": 0.3, "y": 0.3, "z": 0.7}, "target": {"x": 0.5, "y": 0.5},
+        "color": [1, 0.8, 0.6], "intensity": 0.8, "diffusion": 0.3, "radius": 0.8,
+        "specular": 0.2, "shininess": 32, "coneAngle": 50, "coneSoftness": 0.5,
+        "castShadows": False, "shadowStrength": 0.7,
+    }
+    body = {
+        "lights": [light], "globals": {"ambient": 0, "exposure": 0, "keepOriginalLight": 1},
+        "kind": "light_layer", "alpha": True, "target": str(tmp_path / "photo_light.png"),
+    }
+    started = api.post(f"/session/{session_id}/export", headers=AUTH, json=body)
+    assert started.status_code == 200
+    last = events(api, started.json()["job_id"])[-1]
+    assert last["type"] == "done", last
+    files = [Path(name) for name in last["result"]["files"]]
+    assert [path.name for path in files] == ["photo_light.png", "photo_light_alpha.png"]
+    assert all(path.stat().st_size > 100 for path in files)
+
+    body["target"] = str(tmp_path / "missing folder" / "x.png")
+    assert api.post(f"/session/{session_id}/export", headers=AUTH, json=body).status_code == 400
+    body["target"] = "relative.png"
+    assert api.post(f"/session/{session_id}/export", headers=AUTH, json=body).status_code == 400
+    unknown = "/session/0123456789abcdef0123/export"
+    assert api.post(unknown, headers=AUTH, json=body).status_code == 404
+
+
 def test_other_normals_method_is_not_a_cache_hit(client: TestClient) -> None:
     first = upload(client, png_bytes(), normals="depth").json()
     events(client, first["job_id"])
