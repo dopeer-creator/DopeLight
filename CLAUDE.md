@@ -16,7 +16,7 @@
 - **He judges by the look.** He sends screenshots and reference pictures; treat them as the specification. When you can, show pictures rather than describe.
 - **Stop at the end of each phase** and give him an exact list of what to test. Do not start the next phase until he says "go".
 - **Git:** commits and pushes go under GitHub id `Prathamgit9` (`Pratham <139778459+Prathamgit9@users.noreply.github.com>`), never the laptop's default id. No AI attribution lines ("Co-Authored-By", "Generated with") in commits or pull requests.
-- Do not commit his reference pictures or test photos (third-party images; the repository is public).
+- Do not commit his reference pictures or test photos (third-party images; the repository is public). One exception he ordered himself: `handoff/pictures/`, to be removed later.
 
 ## Where things stand
 
@@ -26,11 +26,11 @@
 
 1. `git pull`, then `npm run setup` (dependencies may have changed), then `npm run check`.
 2. Check the git identity before any commit: `git config user.name` and `git config user.email` in this repo must be `Pratham` / `139778459+Prathamgit9@users.noreply.github.com`. Set them repo-locally if not.
-3. Get test photos. Nothing is copied between the PCs by hand; GitHub is the only link. `npm run samples` downloads four free photos into `samples/` (portrait, product, interior, landscape). The fighter photo and the user's reference pictures are other people's images and the repository is public, so they are **not in git** unless the user has since said to publish them (then they are in `handoff/`). If they are not there, ask him to paste the fighter photo into the chat and save it as `samples/fighter.jpg`. Lighting setups to try are in `docs/scenes/` (they work on any photo; the fighter one was placed for that picture).
+3. Get test photos. Nothing is copied between the PCs by hand; GitHub is the only link. `npm run samples` downloads four free photos into `samples/` (portrait, product, interior, landscape). The fighter photo and all of the user's reference pictures are in **`handoff/pictures/`**, each explained in the `README.md` there. **Look at them before doing anything else: they are the specification.** (They are other people's images in a public repository; the user said on 2026-10-08 to push them and that they will be removed later. Remove them when he says so, and do not add more.) Lighting setups to try are in `docs/scenes/` (they work on any photo; the fighter one was placed for that picture).
 4. Run the first-ever photoreal render on the GPU, at full default size:
 
    ```
-   node scripts/uv.mjs run --no-sync --directory backend python ../scripts/render_scene.py ../samples/fighter.jpg ../docs/scenes/fighter-yellow-top-red-trim.json ../render-out/fighter
+   node scripts/uv.mjs run --no-sync --directory backend python ../scripts/render_scene.py ../handoff/pictures/fighter.jpg ../docs/scenes/fighter-yellow-top-red-trim.json ../render-out/fighter
    ```
 
    The first run downloads the photoreal models (3.7 GB). It prints the time, the device, and the peak VRAM, and writes `render-out/fighter/sheet.jpg`: original, preview shading, raw model output, result. **Look at the sheet yourself and show it to the user.** Record the time and peak VRAM in `docs/ARCHITECTURE.md` (Photoreal pass) and tick the Phase 4 line under "Verify on target PC". The peak must stay under 5.5 GB.
@@ -40,7 +40,7 @@
 ### What the user wants (his words, 2026-10-08)
 
 - **No redrawing.** His pixels stay. An earlier idea of a "how much may the AI redraw" control is rejected; do not bring it back.
-- **Crisp, accurate light**, like Photoshop's Relight: see `references/` (Photoshop screenshots with blue and red lights; on the laptop only, ask him for them). He also sent a ChatGPT-generated picture of the fighter: that one *is* a redraw, and it is a reference **only for how crisp the light looks** (a visible shaft of light from above, deep shadow on the subject, a red rim, a real cast shadow on the floor).
+- **Crisp, accurate light**, like Photoshop's Relight: see `handoff/pictures/photoshop-relight-*.png` (Photoshop screenshots with blue and red lights). He also sent a ChatGPT-generated picture of the fighter: that one *is* a redraw, and it is a reference **only for how crisp the light looks** (a visible shaft of light from above, deep shadow on the subject, a red rim, a real cast shadow on the floor).
 - His brief for the fighter photo: a yellow spotlight from the top, a red trim spotlight from the right, the subject a little darker, and **cast shadows that read** ("cast shadows are as important"). The scene file `docs/scenes/fighter-yellow-top-red-trim.json` is that setup.
 - **Try different lighting setups, not the same one twice.** Vary colour, direction, light type, how dark the base is.
 - The background must take the light and its colour too. No cap on how strongly a light tints.
