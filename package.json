@@ -1,5 +1,5 @@
 {
-  "name": "relight-workspace",
+  "name": "dope-light-workspace",
   "private": true,
   "description": "Convenience scripts; the Electron app lives in app/, the Python backend in backend/",
   "scripts": {
@@ -14,6 +14,7 @@
     "bench": "node scripts/uv.mjs run --no-sync --directory backend python -m relight_backend.bench --images ../samples --out ../bench-out",
     "e2e": "node scripts/uv.mjs run --no-sync --directory backend python ../scripts/e2e_backend.py ../samples/portrait.jpg",
     "parity": "node scripts/uv.mjs run --no-sync --directory backend python ../scripts/parity.py",
-    "ui-smoke": "node scripts/ui-smoke.mjs"
+    "ui-smoke": "node scripts/ui-smoke.mjs",
+    "icons": "electron scripts/make-icons.cjs"
   }
 }

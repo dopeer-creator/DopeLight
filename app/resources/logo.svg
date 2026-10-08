@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Dope Light mark: a "D" lit from inside by a cone of light. Source for the app icons
+       (node scripts/make-icons.mjs) and for the logo shown in the app. -->
+  <defs>
+    <clipPath id="d">
+      <path d="M114 56H262A200 200 0 0 1 262 456H114A44 44 0 0 1 70 412V100A44 44 0 0 1 114 56Z" />
+    </clipPath>
+    <linearGradient id="top" gradientUnits="userSpaceOnUse" x1="70" y1="56" x2="440" y2="230">
+      <stop offset="0" stop-color="#1b1611" />
+      <stop offset="0.45" stop-color="#6b4a1f" />
+      <stop offset="1" stop-color="#f0a63a" />
+    </linearGradient>
+    <linearGradient id="bottom" gradientUnits="userSpaceOnUse" x1="70" y1="456" x2="430" y2="330">
+      <stop offset="0" stop-color="#15110d" />
+      <stop offset="0.5" stop-color="#5a3d1a" />
+      <stop offset="1" stop-color="#e79c33" />
+    </linearGradient>
+    <linearGradient id="cone" gradientUnits="userSpaceOnUse" x1="150" y1="250" x2="462" y2="250">
+      <stop offset="0" stop-color="#f3a83a" />
+      <stop offset="0.55" stop-color="#fbcf73" />
+      <stop offset="1" stop-color="#fff1c9" />
+    </linearGradient>
+  </defs>
+  <g clip-path="url(#d)">
+    <rect x="60" y="46" width="420" height="420" fill="url(#top)" />
+    <polygon points="70,214 150,250 500,463 500,520 70,520" fill="url(#bottom)" />
+    <polygon points="150,250 500,82 500,463" fill="url(#cone)" />
+  </g>
+</svg>
