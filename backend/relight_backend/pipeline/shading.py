@@ -45,7 +45,8 @@ FLATTEN_FLOOR = 0.02  # regions darker than this are treated as this bright
 FLATTEN_MAX = 4.0  # never brighten by more than this
 # Under a light nothing is perfectly black: surfaces count as at least this bright
 # (times the Even light amount), so coloured light shows on dark backgrounds.
-ALBEDO_FLOOR = 0.06
+# Kept small: at 0.06 a strong spotlight turned black cloth mid-grey.
+ALBEDO_FLOOR = 0.02
 SOFT_CLIP_START = 0.8  # values above this are rolled off toward 1
 TARGET_HEIGHT = 0.5  # spot/directional lights aim at this fraction of DEPTH_SCALE
 DEFAULT_SHADOW_STEPS = 24

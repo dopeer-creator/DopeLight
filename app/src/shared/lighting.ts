@@ -65,7 +65,7 @@ export const SHADING = {
   flattenTarget: 0.18,
   flattenFloor: 0.02,
   flattenMax: 4.0,
-  albedoFloor: 0.06,
+  albedoFloor: 0.02,
   softClipStart: 0.8,
   targetHeight: 0.5,
   defaultShadowSteps: 24
