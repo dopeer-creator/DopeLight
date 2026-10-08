@@ -62,11 +62,16 @@ PREVIEW_LONG_EDGE = 1536
 RATIO_MIN, RATIO_MAX = 0.05, 12.0  # sane bounds for relit / original
 RATIO_EPSILON = 0.03  # added to both sides of the ratio: tames it in near-black areas,
 # and is what lets those areas gain light (see apply_ratio)
-GUIDED_RADIUS = 0.008  # smoothing radius of the ratio, as a fraction of the width
+GUIDED_RADIUS = 0.012  # edge-keeping smoothing radius, as a fraction of the width
 GUIDED_EPSILON = 0.01
 COLOUR_LIMIT = 1.5  # a channel may change at most this much more (or less) than brightness
 COLOUR_SIGMA = 0.04  # blur of the colour change, as a fraction of the width
 SUBJECT_FEATHER = 0.006  # softening of the subject mask's edge, as a fraction of the width
+BRIGHTNESS_LEASH = 2.5  # how far the model's brightness may depart from the preview's
+MODEL_COLOUR_LIMIT = 3.0  # bound on the model's own colour, where it is used at all
+# The user's lights own the colour where they supply this share of the brightness or more.
+LIGHT_SHARE_LOW = 0.1
+LIGHT_SHARE_FULL = 0.45
 MIN_SUBJECT_SHARE = 0.02  # below this share of the picture, there is no subject to speak of
 # On out-of-memory the render is retried smaller, then with the slowest, leanest loading.
 RETRY_SCALES = (1.0, 0.8, 0.64)
@@ -138,6 +143,7 @@ def _raw_ratio(original_linear: FloatArray, relit_linear: FloatArray) -> FloatAr
 def lighting_ratio(
     original: FloatArray, relit: FloatArray,
     hint: FloatArray | None = None, subject: FloatArray | None = None,
+    base_level: float = 1.0,
 ) -> FloatArray:
     """The change in light, as a per-channel ratio. Inputs: sRGB floats, same size.
 
@@ -145,37 +151,68 @@ def lighting_ratio(
     things and invents backgrounds. So brightness and colour are taken from
     different places:
 
-    - **Brightness** (how light and shadow fall) comes from the model, smoothed
-      with the original's edges kept.
+    - **Brightness** (how light and shadow fall) comes from the model.
     - **Colour** comes from `hint`, the preview's own shading of the user's
-      lights, in full: a saturated blue light gives a saturated blue result. The
-      model's colour is not used, so it cannot turn a blue jacket teal.
+      lights, in full, wherever those lights land: a saturated blue light gives a
+      saturated blue result, and the model cannot turn a blue jacket teal there.
+      Where the user's lights do not reach but the model adds light anyway (bounce,
+      spill), there is no light colour to use, so the model's own colour is kept;
+      otherwise that light would come out grey. `base_level` is how bright the
+      unlit photo is in the hint (original light + ambient, times exposure); it
+      tells the two cases apart.
     - Off the subject (`subject` mask), the whole ratio comes from the hint. The
       model is a foreground relighter and its backgrounds are inventions.
+
+    Every picture is smoothed first (keeping the original's edges) and divided
+    afterwards. Dividing pixel by pixel and smoothing the result looks the same
+    in bright areas but falls apart in dark ones, where noise in a near-zero
+    original turns into blotches. Smoothing also removes the dotted edges of the
+    preview's shadows.
 
     Without a hint there is no record of the lights, and a broad, limited part
     of the model's own colour change is kept instead.
     """
-    original_linear, relit_linear = _linear(original), _linear(relit)
-    luminance = np.asarray(original_linear @ _LUMA, dtype=np.float32)
+    original_linear = _linear(original)
+    guide = np.asarray(original_linear @ _LUMA, dtype=np.float32)
     width = original.shape[1]
     radius = max(1, round(width * GUIDED_RADIUS))
 
-    brightness = _raw_ratio(luminance[..., None], (relit_linear @ _LUMA)[..., None])
-    brightness = guided_filter(luminance, brightness, radius, GUIDED_EPSILON)
+    def smooth(picture: FloatArray) -> FloatArray:
+        return np.maximum(guided_filter(guide, picture, radius, GUIDED_EPSILON), 0.0)
+
+    def brightness_of(picture: FloatArray) -> FloatArray:
+        return np.asarray((picture @ _LUMA)[..., None], dtype=np.float32)
+
+    base = smooth(original_linear)
+    model = smooth(_linear(relit))
+    brightness = _raw_ratio(brightness_of(base), brightness_of(model))
 
     if hint is None:
-        tint = _raw_ratio(original_linear, relit_linear) / np.maximum(brightness, 1e-3)
+        tint = _raw_ratio(base, model) / np.maximum(brightness, 1e-3)
         tint = np.clip(tint, 1.0 / COLOUR_LIMIT, COLOUR_LIMIT).astype(np.float32)
         broad_tint = cv2.GaussianBlur(tint, (0, 0), max(1.0, width * COLOUR_SIGMA))
         ratio = np.asarray(brightness * broad_tint, dtype=np.float32)
         return np.asarray(np.clip(ratio, RATIO_MIN, RATIO_MAX), dtype=np.float32)
 
-    hint_linear = _linear(hint)
-    preview = _raw_ratio(original_linear, hint_linear)  # the preview's light, exactly
-    preview_brightness = _raw_ratio(luminance[..., None], (hint_linear @ _LUMA)[..., None])
-    light_colour = preview / np.maximum(preview_brightness, 1e-3)  # colour without brightness
-    ratio = np.asarray(brightness * light_colour, dtype=np.float32)
+    lights = smooth(_linear(hint))
+    preview = _raw_ratio(base, lights)  # the preview's light
+    preview_brightness = _raw_ratio(brightness_of(base), brightness_of(lights))
+    light_colour = preview / np.maximum(preview_brightness, 1e-3)
+    # The leash: the model may refine how bright each spot is, within a factor of
+    # what the preview's physics gives. Past that it is repainting (a black cloth
+    # redrawn as a pale one), not lighting.
+    freedom = np.clip(brightness / np.maximum(preview_brightness, 1e-3),
+                      1.0 / BRIGHTNESS_LEASH, BRIGHTNESS_LEASH)
+    brightness = np.asarray(preview_brightness * freedom, dtype=np.float32)
+    model_colour = np.clip(_raw_ratio(base, model) / np.maximum(brightness, 1e-3),
+                           1.0 / MODEL_COLOUR_LIMIT, MODEL_COLOUR_LIMIT)
+    # Share of the hint's brightness that comes from the user's lights, 0..1.
+    unlit = base_level * brightness_of(base)
+    share = np.clip(1.0 - unlit / (brightness_of(lights) + RATIO_EPSILON), 0.0, 1.0)
+    t = np.clip((share - LIGHT_SHARE_LOW) / (LIGHT_SHARE_FULL - LIGHT_SHARE_LOW), 0.0, 1.0)
+    weight = t * t * (3.0 - 2.0 * t)
+    colour = weight * light_colour + (1.0 - weight) * model_colour
+    ratio = np.asarray(brightness * colour, dtype=np.float32)
 
     if subject is not None and float(subject.mean()) >= MIN_SUBJECT_SHARE:
         soft = cv2.GaussianBlur(subject, (0, 0), max(1.0, width * SUBJECT_FEATHER))
@@ -299,8 +336,9 @@ def render(
     subject = _resize(load_gray8(folder / map_file("mask", meta.normals_method)), relit.size)
     hint_small = np.asarray(hint.resize(relit.size, Image.Resampling.LANCZOS),
                             dtype=np.float32) / 255.0
+    base_level = (settings.keep_original_light + settings.ambient) * 2.0**settings.exposure
     ratio = lighting_ratio(small, np.asarray(relit, dtype=np.float32) / 255.0, hint_small,
-                           subject)
+                           subject, base_level)
 
     render_id = uuid.uuid4().hex[:12]
     out = folder / "renders" / render_id

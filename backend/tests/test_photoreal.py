@@ -127,6 +127,29 @@ def test_colour_changes_are_limited_but_brightness_is_not() -> None:
     assert np.allclose(lighting_ratio(dim, lit)[20, 30], expected, rtol=0.03)
 
 
+def test_model_cannot_brighten_far_past_the_preview() -> None:
+    """A black cloth redrawn as a pale one is repainting, not lighting."""
+    dark = np.full((40, 60, 3), 0.2, dtype=np.float32)
+    repainted = np.full((40, 60, 3), 0.95, dtype=np.float32)  # the model makes it nearly white
+    barely_lit = np.full((40, 60, 3), 0.22, dtype=np.float32)  # the preview: hardly any light
+    subject = np.ones((40, 60), dtype=np.float32)
+    lin, eps = photoreal._linear, photoreal.RATIO_EPSILON
+    preview = (lin(barely_lit)[0, 0, 0] + eps) / (lin(dark)[0, 0, 0] + eps)
+    ratio = lighting_ratio(dark, repainted, barely_lit, subject)[20, 30, 0]
+    assert ratio == pytest.approx(preview * photoreal.BRIGHTNESS_LEASH, rel=0.03)
+
+
+def test_light_the_model_adds_on_its_own_keeps_the_models_colour() -> None:
+    grey = np.full((40, 60, 3), 0.4, dtype=np.float32)
+    warm = grey.copy()
+    warm[..., 0] = 0.6  # the model adds a warm glow
+    warm[..., 2] = 0.3
+    subject = np.ones((40, 60), dtype=np.float32)
+    # The preview put no light here at all, so there is no light colour to borrow.
+    ratio = lighting_ratio(grey, warm, grey, subject)[20, 30]
+    assert ratio[0] > 1.2 > 0.9 > ratio[2]  # still warm, not grey
+
+
 def test_ratio_transfer_keeps_the_originals_detail() -> None:
     rng = np.random.default_rng(2)
     full = rng.uniform(0.2, 0.6, (128, 192, 3)).astype(np.float32)  # fine texture
@@ -153,7 +176,8 @@ def test_a_coloured_light_comes_through_in_full() -> None:
     blue_light[..., 2] = 0.95  # the preview: a strongly blue light
     blue_light[..., 0] = 0.35
     subject = np.ones((40, 60), dtype=np.float32)
-    ratio = lighting_ratio(grey, model_says, blue_light, subject)[20, 30]
+    # Original light at 50 %: the blue light supplies most of the brightness there.
+    ratio = lighting_ratio(grey, model_says, blue_light, subject, base_level=0.5)[20, 30]
     lin, eps = photoreal._linear, photoreal.RATIO_EPSILON
     # Blue against red is as strong as in the preview: far past the old 1.5x cap.
     wanted = (lin(blue_light)[0, 0, 2] + eps) / (lin(blue_light)[0, 0, 0] + eps)
