@@ -119,11 +119,13 @@ class IcLight:
         )
         pipe.set_progress_bar_config(disable=True)
         if device.type == "cuda":
-            # 6 GB cards: slice attention, tile the VAE, and keep only the part
-            # that is working on the GPU.
-            pipe.enable_attention_slicing()
+            # 6 GB cards: tile the VAE and keep only the part that is working on the
+            # GPU. Attention is left to PyTorch's own memory-efficient kernel: sliced
+            # attention builds the full attention matrix piece by piece, which at the
+            # high-resolution size filled the card and took 4.6 s a step (RTX 4050).
             pipe.vae.enable_tiling()
             if low_memory:
+                pipe.enable_attention_slicing()
                 pipe.enable_sequential_cpu_offload()
             else:
                 pipe.enable_model_cpu_offload()
