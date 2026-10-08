@@ -20,31 +20,72 @@
 
 ## Where things stand
 
-**Newest note (2026-10-08, laptop, session cut short by a usage limit):** The user rejected any "let the AI redraw" control. **His pixels must stay; the light on them must be crisp and accurate, like Photoshop's Relight.** The ChatGPT picture he sent is a reference for crispness only. Proposal A below is dropped; B (light shaft), C (prompt from the lights), D (judge at real size on the RTX 4050) still stand.
+*Last updated: 2026-10-08, from the laptop. The user works on the RTX 4050 PC next; this section is written for that session.*
 
-Started on crispness: `photoreal.add_preview_detail` splits the light in two. The broad light (where it falls, how it fades) stays the model's; the fine light (the edge along a muscle, a fold, a rim) comes from the preview shaded at the full working size. The saved ratio is now at working size, not diffusion size. Unit tests pass (78). **Not yet looked at on a real photo**: next step is to render `samples/fighter.jpg` (scene: yellow overhead spot + red trim spot from the right) and judge the picture; `DETAIL_LIMIT` (2.5) and the preview's rough cast shadows are the things to watch, since they now show up sharp.
+### Start here (GPU PC)
 
-*Last updated: 2026-10-08, from the laptop.*
+1. `git pull`, then `npm run setup` (dependencies may have changed), then `npm run check`.
+2. Check the git identity before any commit: `git config user.name` and `git config user.email` in this repo must be `Pratham` / `139778459+Prathamgit9@users.noreply.github.com`. Set them repo-locally if not.
+3. Ask the user to put his fighter photo at `samples/fighter.jpg` (it is not in git; `samples/` is ignored). Any of his own photos will also do.
+4. Run the first-ever photoreal render on the GPU, at full default size:
 
-**Phases 0 to 4 are built. The work is paused at the end of Phase 4, waiting for the user's test and his "go" for Phase 5.**
+   ```
+   node scripts/uv.mjs run --no-sync --directory backend python ../scripts/render_scene.py ../samples/fighter.jpg ../docs/scenes/fighter-yellow-top-red-trim.json ../render-out/fighter
+   ```
 
-- Phase 4 (photoreal pass) works on the laptop's CPU at small size: natural light on the subject, the user's lights' colours at full strength, detail and identity kept from the original. **It has never been run on the RTX 4050.** That is the first thing to do on the target PC: `git pull`, `npm run setup`, `npm run dev`, open a photo, place lights, press Render with the default settings; note the time, the peak VRAM (in the job result), any error, and how it looks.
-- The user's latest test picture is a martial-arts photo (`samples/fighter.jpg` on the laptop, not in git): a dark, low-key studio shot. He asked for a yellow spotlight from the top plus a red trim spotlight from the right, the subject a little darker, and **cast shadows that read**: "cast shadows are as important". That setup now gives a usable result on the laptop (overhead spot pooling on the floor, his shadow on the floor, red along his right side).
-- **Try different lighting setups when testing, not the same one twice.** He said so directly. Vary colour, direction, light type, and how dark the base is; a dark photo exposed three faults a bright portrait had hidden.
-- What that dark photo taught (all fixed, see `docs/ARCHITECTURE.md`, Photoreal pass): measure the lighting ratio between *smoothed* pictures, never pixel by pixel; keep the model's brightness on a leash to the preview's (2.5 times), because the model repaints (black shorts became pale cloth); use the lights' colour only where the lights land and the model's colour elsewhere; and keep the dark-surface floor small (0.02), since at 0.06 a strong spot turned black cloth grey.
-- Light placement matters as much as the code: a top spot placed in front of the subject throws ugly wing-shaped shadows on the back wall; placed directly overhead (depth about equal to the subject's) the shadow falls on the floor.
-- His standing concern is quality: the lighting must look good and accurate. Photoshop's result has crisper light shapes than ours; whether full size on the GPU closes that gap is unknown. Known weak spots: the preview's cast shadows are a rough heightfield estimate (soft-edged after smoothing, but shapes can be wrong), and the background only ever gets the preview's light.
+   The first run downloads the photoreal models (3.7 GB). It prints the time, the device, and the peak VRAM, and writes `render-out/fighter/sheet.jpg`: original, preview shading, raw model output, result. **Look at the sheet yourself and show it to the user.** Record the time and peak VRAM in `docs/ARCHITECTURE.md` (Photoreal pass) and tick the Phase 4 line under "Verify on target PC". The peak must stay under 5.5 GB.
+5. Then do the same through the app (`npm run dev`, open the photo, place lights, Render), since that is what the user will use.
+6. Then work down "The work list" below, showing the user a sheet after each change.
 
-- **The user's verdict on the fighter result (2026-10-08, latest): not good enough.** He compared three results for the same brief (yellow top spotlight, red trim from the right). Ours: weak. Clipdrop Relight: warm light over the whole scene, "not good enough either" but better. **ChatGPT's image generation: "the kind of result I want"**: a cinematic redraw with a visible shaft of light through haze from above, a deep-shadowed subject, a red rim, a real cast shadow on the floor, glossy skin highlights, at higher resolution. Note that picture is a full redraw by a large cloud model (face and cloth are re-rendered), not a relight of the original pixels.
-- What that means for the design: our pipeline protects the original pixels and takes only light from the model, and so throws away most of what made the raw IC-Light output dramatic. The user evidently accepts some redrawing for a better look. **Proposed to him, awaiting his answer:** (A) a "how much may the AI redraw" control, from light-only (today) to using the model's picture nearly as is, background included; (B) a visible light shaft (haze) for spotlights in the preview shader and the hint; (C) a prompt written from the lights automatically (colours, directions, mood); (D) judge at real size on the RTX 4050: laptop tests run at 320 x 512, which alone makes results soft. Be honest with him about the ceiling: a free model that fits 6 GB (IC-Light on SD 1.5) will not equal ChatGPT's generator. Larger free editors (FLUX Kontext, Qwen-Image-Edit) do not fit 6 GB in any practical way or are non-commercial; check current options before promising anything.
+### What the user wants (his words, 2026-10-08)
 
-**Next, in order:**
+- **No redrawing.** His pixels stay. An earlier idea of a "how much may the AI redraw" control is rejected; do not bring it back.
+- **Crisp, accurate light**, like Photoshop's Relight: see `references/` (Photoshop screenshots with blue and red lights; on the laptop only, ask him for them). He also sent a ChatGPT-generated picture of the fighter: that one *is* a redraw, and it is a reference **only for how crisp the light looks** (a visible shaft of light from above, deep shadow on the subject, a red rim, a real cast shadow on the floor).
+- His brief for the fighter photo: a yellow spotlight from the top, a red trim spotlight from the right, the subject a little darker, and **cast shadows that read** ("cast shadows are as important"). The scene file `docs/scenes/fighter-yellow-top-red-trim.json` is that setup.
+- **Try different lighting setups, not the same one twice.** Vary colour, direction, light type, how dark the base is.
+- The background must take the light and its colour too. No cap on how strongly a light tints.
+- His verdict so far: ours was weak and soft; Clipdrop's Relight was better but "not good enough either".
 
-1. Run and judge Phase 4 on the RTX 4050 (above). Fix what that shows.
-2. On the user's "go": **Phase 5** (first-run setup that creates the Python environment and downloads models with progress; settings; project save/load; glass UI polish; a bundled font). Details in `docs/PLAN.md`.
-3. Then **Phase 6**: installer, auto-update, and GitHub releases, which the user has asked for. It cannot come before Phase 5: a packaged app has no Python environment until the first-run setup exists.
+### What was built last (commit `6845a6b`), and what the test showed
 
-Open questions for the user: none blocking. (The project file extension, `.relight` in the brief, should probably become `.dopelight`; ask when Phase 5 reaches it.)
+`photoreal.add_preview_detail` splits the light in two. The broad light (where it falls, how it fades) stays the AI model's. The fine light (the edge along a muscle, a fold, a rim) comes from the preview shaded at the full working size, where it is exact per pixel. Before this, the model's light was measured at diffusion size and smoothed, which made everything mushy.
+
+Tested on the laptop only (CPU, model at 320 x 512, 12 steps, 92 s). Honest reading of that picture:
+
+- Better: the red light along the abs, arm and hand wraps is now sharp, and the light follows the muscles.
+- **New fault, most visible:** the preview's flaws now show sharp too. The spotlight's cone leaves a hard straight diagonal edge on the back wall, and the cast shadow on the floor has a jagged, dotted edge (the shadow ray-march's jitter). Before, the smoothing hid both.
+- The black shorts came out blue-grey: the model repaints them pale, and the 2.5 times brightness leash still lets some of that through.
+- The result is now close to the preview's own shading. So **the preview's quality is the ceiling**, and the preview is where the work is.
+- Unknown: how it looks at real size on the GPU. Nothing here was ever run on the RTX 4050.
+
+### The work list, in order
+
+1. **Measure and look on the GPU** (steps 4 and 5 above). Some softness may simply be the laptop's tiny render size.
+2. **Clean cast shadows in the preview.** The dotted, jagged shadow edge must go: more ray-march steps or a better jitter pattern, then a small edge-keeping blur on the shadow term only (not on the whole light). Shadow shapes come from a heightfield guessed from depth, so they are approximate; aim for clean and plausible. Shader and Python twin must change together (`gl/shader.ts`, `pipeline/shading.py`, then `npm run parity`).
+3. **Spotlight cone edge.** On the wall it reads as a hard triangle. Check `coneSoftness` in the scene first (0.5 to 0.6 there); if the falloff curve itself is too hard, soften it. A real spot's edge is soft on a far wall.
+4. **Visible light shaft (haze)** for spotlights, in the shader and in the hint. This is a large part of why his reference picture looks dramatic. Make it a per-light setting, default off or low.
+5. **Decide what the model is still for.** With the fine light from the preview, the model only adds broad realism, and its repainting still leaks (the shorts). Try: a tighter `BRIGHTNESS_LEASH`, a higher "Follow lights" value, and the preview alone (no model). Show the user the versions side by side and let him pick; this is a matter of taste.
+6. **A prompt written from the lights** (colours, directions, mood) in place of the fixed "beautiful lighting, natural", if step 5 keeps the model.
+7. `DETAIL_LIMIT` (2.5) bounds how much the fine light may differ from the broad light. Raise it if crisp edges look clipped, lower it if noise shows.
+
+Be honest with the user about the ceiling: a free model that fits 6 GB will not equal a large cloud generator, and with no redrawing allowed, the look depends on the estimated depth and normals being right.
+
+### Phases
+
+Phases 0 to 4 are built. Phase 4 is still being tuned for the look (above), and the user has not accepted it. **Do not start Phase 5 until he says "go".**
+
+- **Phase 5** on his "go": first-run setup (Python environment, model downloads with progress), settings, project save/load, glass UI polish, a bundled font. Details in `docs/PLAN.md`.
+- **Phase 6** after that: installer, auto-update, GitHub releases. It needs Phase 5's first-run setup first, because a packaged app has no Python environment.
+
+Open question for later: the project file extension (`.relight` in the brief) should probably be `.dopelight`; ask when Phase 5 reaches it.
+
+### Lessons already paid for (do not relearn)
+
+- Measure the lighting ratio between *smoothed* pictures, never pixel by pixel: dark areas turn to blotches.
+- The model repaints (black shorts became pale cloth). Keep its brightness on a leash to the preview's, take colour from the user's lights where they land, and take only the subject from the model; the background gets the preview's light.
+- The dark-surface floor `ALBEDO_FLOOR` stays small (0.02); at 0.06 a strong spot turned black cloth grey.
+- Placement matters as much as code: a top spot in front of the subject throws wing-shaped shadows on the wall; directly overhead (depth about equal to the subject's) the shadow falls on the floor.
+- A dark photo shows faults a bright portrait hides. Test on both.
 
 History, for context: Phase 1 was benchmarked on the target PC on 2026-10-07 (highest peak VRAM 4326 MB). Phase 3 was confirmed by the user (light layer + photo = relit export). The user called the first preview "not good yet or accurate"; since then: lights stop at the sky, no default shine, Smooth surface and Even light settings, lights behind the subject with a rim, Photoshop-style position sliders, colour of light uncapped. Desktop first; Android later if at all.
 
@@ -71,6 +112,7 @@ From repo root:
 | Shader vs Python reference, pixel comparison | `npm run parity` |
 | Real app driven by a script (drag, keys, sliders) | `npm run ui-smoke` |
 | Orphan process check | `powershell -File scripts/check-orphans.ps1` |
+| Photoreal render of one photo + scene file, no window | `scripts/render_scene.py` (usage at the top of the file) |
 
 - **Never run plain `uv run` or `uv sync` in `backend/`.** Without `--extra cpu` / `--extra cu126` uv swaps PyTorch for the default PyPI build. Root scripts use `node scripts/uv.mjs run --no-sync`; setup uses `scripts/setup-backend.mjs`. Both find uv through `scripts/find-uv.mjs` (PATH first, then `~/.local/bin` and the WinGet folder), because a terminal opened before uv was installed keeps the old PATH.
 - Bench options: `uv run --no-sync --directory backend python -m relight_backend.bench --help` (`--normals`, `--working-edge`, `--fresh`).
@@ -101,7 +143,7 @@ From repo root:
 - **Export (Phase 3):** backend renders at full size in ~1 MP row strips with `shade_scene(rows=...)`; layers are exact differences so base + layer = relit under Add, with two blend targets (gamma-space editors, linear-light editors); details and measured tolerances in `docs/ARCHITECTURE.md`. File writes go through `cv2.imencode` + Python I/O because OpenCV cannot open non-ASCII paths on Windows. Window filters at full size must be separable (`_window_max`); a square 49-pixel pool on 18 MP took a minute.
 - **Screenshots can be stale:** a covered window or sleeping display stops painting; `dev.ts` forces a repaint before capture. If a capture shows an impossible state, check `page loaded` / `renderer process gone` in the log before suspecting the app.
 - **Preview quality fixes (2026-10-08, after the user's first real test looked bad):** lights do not reach the sky (reach map from raw inverse depth), new lights have specular 0, scene settings Smooth surface (0.3) and Even light (0.5). Table in `docs/ARCHITECTURE.md`. `GlobalSettings` gained `smoothing` and `flatten`; anything loading saved settings must merge defaults (`lightsStore.reset` does). The user's verdict before these fixes: the lighting "doesnt look good yet or accurate"; Phase 4 is expected to close that gap.
-- **Photoreal (Phase 4):** IC-Light `fc` weights are offsets merged onto Realistic Vision 5.1 (SD 1.5), ported from the official `gradio_demo.py`. The whole photo is the condition (no background removal, so the scene is kept); the hint is the preview's own relit shading at diffusion size and becomes the starting latent; "Follow lights" maps to denoise 0.95 (loose) .. 0.5 (tight). Only a lighting ratio is kept and applied to the full-size original, so detail and identity stay: **brightness from the model (leashed to within 2.5 times of the preview's), colour from the user's lights in full wherever they land (the model's colour elsewhere)**, subject only; the background takes the hint's ratio. Ratios are taken between guided-filtered pictures. The ratio is applied as `(orig + e) * R - e` so black areas can gain light. The user's Photoshop references (2026-10-08) want strong coloured light on subject and background; do not reintroduce a colour cap. Renders live in `<session>/renders/<id>/` (`ratio.npy`, `preview.jpg`, plus `hint.jpg` and `diffusion.jpg` for inspection). OOM: retry at 0.8x and 0.64x size with sequential offload. Models: 3.7 GB (`specs.PHOTOREAL`).
+- **Photoreal (Phase 4):** IC-Light `fc` weights are offsets merged onto Realistic Vision 5.1 (SD 1.5), ported from the official `gradio_demo.py`. The whole photo is the condition (no background removal, so the scene is kept); the hint is the preview's own relit shading at diffusion size and becomes the starting latent; "Follow lights" maps to denoise 0.95 (loose) .. 0.5 (tight). Only a lighting ratio is kept and applied to the full-size original, so detail and identity stay: **brightness from the model (leashed to within 2.5 times of the preview's), colour from the user's lights in full wherever they land (the model's colour elsewhere)**, subject only; the background takes the hint's ratio. Ratios are taken between guided-filtered pictures. The fine light is then put back from the preview shaded at the full working size (`add_preview_detail`), so edges of light are crisp; this also makes the preview's own flaws show. The ratio is applied as `(orig + e) * R - e` so black areas can gain light. The user's Photoshop references (2026-10-08) want strong coloured light on subject and background; do not reintroduce a colour cap. Renders live in `<session>/renders/<id>/` (`ratio.npy`, `preview.jpg`, plus `hint.jpg` and `diffusion.jpg` for inspection). OOM: retry at 0.8x and 0.64x size with sequential offload. Models: 3.7 GB (`specs.PHOTOREAL`).
 - **Lights:** up to 8; spot/directional aim at a `target` point rather than storing a direction; colour stored as linear RGB. Opening an image adds one starter light.
 - **Not built, on purpose:** rembg/isnet mask fallback (BiRefNet lite worked); albedo shading-flattening toggle (brief says only if it visibly helps; revisit in Phase 2 when lighting is visible).
 - **Electron binary:** Electron 44 has no npm install script; `app/package.json` `postinstall` runs `install-electron`. `esbuild` is approved in `allowScripts`.

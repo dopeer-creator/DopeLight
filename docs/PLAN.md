@@ -38,6 +38,8 @@ These override the brief where they differ.
   - lights can sit in front of or **behind** the subject; a backlight gives a bright rim;
   - **coloured lights must show at full strength**, on the subject and on the background, including dark backgrounds. No cap on how much a light may tint the picture.
 - **The lighting must look good and accurate.** The user judged the first preview "not good yet or accurate". Quality of the result is the main thing they care about.
+- **No redrawing; crisp light.** (2026-10-08) The photoreal pass must keep the photo's own pixels and change only the light, and that light must be crisp and accurate like Photoshop's Relight. A control that lets the AI redraw the picture was offered and rejected.
+- **Cast shadows matter** as much as the light itself, and tests should use varied lighting setups.
 - **Releases on GitHub** for the app (installer and updates).
 - **Android:** asked about once; decided desktop first. A phone version, if ever, would be a thin client to the PC backend. Do not start it unasked.
 - **Two machines.** Code is written on a laptop without a GPU and on the target PC. Both push to the same GitHub repository.
@@ -53,7 +55,7 @@ The rule from the brief: do the phases in order, and **stop at the end of each f
 | 1 | Preprocess: subject mask, depth, surface normals, session cache, benchmark | done; benchmarked on the RTX 4050 (peak 4.3 GB) |
 | 2 | Live preview: shader, light gizmos, sliders, compare, undo/redo, Python reference + parity test | done |
 | 3 | Exports: full-size relit image, light layers (8/16-bit, per light) | done; the user confirmed layer + photo = relit |
-| 4 | Photoreal pass: IC-Light guided by the preview, ratio transfer to full size, photoreal exports | built; **not yet run on the RTX 4050** |
+| 4 | Photoreal pass: IC-Light guided by the preview, ratio transfer to full size, photoreal exports | built; **not yet run on the RTX 4050**; the look is not yet accepted by the user (work list in `CLAUDE.md`) |
 | 5 | Product polish (see below) | not started |
 | 6 | Packaging and updates (see below) | not started |
 

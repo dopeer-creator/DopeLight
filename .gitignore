@@ -32,3 +32,4 @@ parity-out/
 
 # The user's look references (third-party images; keep out of the public repo)
 references/
+render-out/
