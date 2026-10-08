@@ -45,6 +45,9 @@ const float SHADOW_THICKNESS = ${f(SHADING.shadowThickness)};
 const float EMBED_FADE = ${f(SHADING.embedFade)};
 const float RIM_STRENGTH = ${f(SHADING.rimStrength)};
 const float RIM_WHITE = ${f(SHADING.rimWhite)};
+const float RIM_THIN = ${f(SHADING.rimThin)};
+const float RIM_BACK = ${f(SHADING.rimBack)};
+const float RIM_FRONT_FADE = ${f(SHADING.rimFrontFade)};
 const float FLATTEN_TARGET = ${f(SHADING.flattenTarget)};
 const float FLATTEN_FLOOR = ${f(SHADING.flattenFloor)};
 const float FLATTEN_MAX = ${f(SHADING.flattenMax)};
@@ -54,9 +57,10 @@ const float SOFT_CLIP_START = ${f(SHADING.softClipStart)};
 uniform sampler2D uAlbedo; // sRGB texture: sampling returns linear light
 uniform sampler2D uNormal; // rgb = n * 0.5 + 0.5, camera space (+X right, +Y up, +Z to viewer)
 uniform sampler2D uDepth;  // r: depth 0..1, 1 = nearest. g: highest depth within a few pixels.
-                           // b: outline strength, 1 on the near side of a depth edge
 uniform sampler2D uNormalSmooth; // the same normals, blurred
-uniform sampler2D uAux;    // r: 1 where lights reach, 0 for sky. g: sqrt of large-scale brightness
+uniform sampler2D uAux;    // r: 1 where lights reach, 0 for sky. g: sqrt of large-scale brightness.
+                           // b, a: the rim map, a vector pointing out of the shape a pixel is on;
+                           // its length is 1 at the outline and 0 a band's width inside it
 uniform float uAspect;     // image height / width
 
 uniform int uLightCount;
@@ -129,7 +133,7 @@ float occlusion(vec3 position, vec3 ray, float diffusion, float jitter, float be
   return occluded;
 }
 
-vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, float outline, float noise) {
+vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, vec2 rimVector, float noise) {
   vec3 toLight;
   vec3 ray;
   float attenuation = 1.0;
@@ -165,11 +169,17 @@ vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, float outline,
       * occlusion(position, ray, uDiffusion[i], (noise - 0.5) * uJitter, behind, thickness);
   }
 
-  // Rim light: a light behind a shape makes its outline glow. The outline comes
-  // from depth edges; squaring keeps it thin and brightest right at the edge. It
-  // is not shadowed: the rim is exactly the light that gets past the shape.
-  float fromBehind = smoothstep(0.0, 0.5, -toLight.z);
-  float rim = RIM_STRENGTH * fromBehind * outline * outline;
+  // Rim light: an edge glows when it faces the light, or when the light is behind
+  // the shape; not when the light is in front. It is not shadowed: the rim is
+  // exactly the light that gets past the shape.
+  float edge = length(rimVector);
+  vec2 outward = rimVector / max(edge, 1e-4);
+  // A light behind the shape rims every edge, also those turned away from it.
+  float amount = clamp(max(dot(outward, toLight.xy), 0.0) + RIM_BACK * max(-toLight.z, 0.0), 0.0, 1.0)
+    * (1.0 - smoothstep(0.0, RIM_FRONT_FADE, toLight.z));
+  float reach = mix(RIM_THIN, 1.0, uDiffusion[i]); // a softer light, a broader rim
+  float across = clamp((edge - (1.0 - reach)) / reach, 0.0, 1.0);
+  float rim = RIM_STRENGTH * amount * across * across * across; // brightest at the very edge
 
   return uColor[i] * attenuation
     * (shadow * (albedo * diffuse + specular) + rim * mix(albedo, vec3(1.0), RIM_WHITE));
@@ -180,9 +190,9 @@ void main() {
   vec3 albedo = texture(uAlbedo, vUv).rgb;
   vec3 normal = normalize(texture(uNormal, vUv).rgb * 2.0 - 1.0);
   vec3 smoothNormal = normalize(texture(uNormalSmooth, vUv).rgb * 2.0 - 1.0);
-  vec3 aux = texture(uAux, vUv).rgb;
-  vec3 depthSample = texture(uDepth, vUv).rgb;
-  float depth = depthSample.r;
+  vec4 aux = texture(uAux, vUv);
+  float depth = texture(uDepth, vUv).r;
+  vec2 rimVector = (aux.ba * 255.0 - 128.0) / 127.0; // stored as 128 + 127 * value
 
   bool showOriginal = uMode == MODE_ORIGINAL || (uSplit >= 0.0 && vUv.x < uSplit);
   if (showOriginal) {
@@ -204,7 +214,7 @@ void main() {
   vec3 lightSum = vec3(0.0);
   for (int i = 0; i < MAX_LIGHTS; i++) {
     if (i >= uLightCount) break;
-    lightSum += contribution(i, litAlbedo, normal, position, depthSample.b, noise);
+    lightSum += contribution(i, litAlbedo, normal, position, rimVector, noise);
   }
   lightSum *= aux.r; // no light on the sky and the far distance
 

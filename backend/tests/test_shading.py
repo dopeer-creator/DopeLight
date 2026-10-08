@@ -43,9 +43,10 @@ def test_constants_match_the_app() -> None:
         "embedFade": shading.EMBED_FADE,
         "shellDilate": shading.SHELL_DILATE,
         "rimStrength": shading.RIM_STRENGTH,
-        "rimEdgeScale": shading.RIM_EDGE_SCALE,
-        "rimWidth": shading.RIM_WIDTH,
         "rimWhite": shading.RIM_WHITE,
+        "rimThin": shading.RIM_THIN,
+        "rimBack": shading.RIM_BACK,
+        "rimFrontFade": shading.RIM_FRONT_FADE,
         "flattenTarget": shading.FLATTEN_TARGET,
         "flattenFloor": shading.FLATTEN_FLOOR,
         "flattenMax": shading.FLATTEN_MAX,
@@ -136,11 +137,35 @@ def test_light_behind_a_shape_gives_it_a_glowing_outline() -> None:
     back = Light(x=0.5, y=0.5, z=0.08, specular=0.0, diffusion=0.0)
     result = lit(back, depth=depth)
     edge, centre, floor_far = (H // 2, 20, 0), (H // 2, W // 2, 0), (2, 2, 0)
-    assert float(result[edge]) > 0.2  # the block's outline glows
+    assert float(result[edge]) > 0.02  # the block's outline glows
     assert float(result[centre]) == 0.0  # its middle does not
-    outline = shading.outline_map(torch.from_numpy(depth))
-    assert float(outline[edge[0], edge[1]]) == 1.0 and float(outline[centre[0], centre[1]]) == 0.0
-    assert float(outline[floor_far[0], floor_far[1]]) == 0.0  # the low side of an edge has none
+    strength = np.linalg.norm(shading.rim_field(depth), axis=-1)
+    assert strength[edge[0], edge[1]] > 0.6 and strength[centre[0], centre[1]] == 0.0
+    assert strength[floor_far[0], floor_far[1]] == 0.0  # the low side of an edge has none
+
+
+def test_rim_lights_only_the_edge_that_faces_the_light() -> None:
+    depth = np.full((H, W), 0.1, dtype=np.float32)
+    depth[10:30, 20:40] = 1.0
+    # Level with the top of the block and far off to the right: a side light.
+    side = Light(x=3.0, y=0.5, z=0.4, specular=0.0, diffusion=0.0, radius=3.0)
+    result = lit(side, depth=depth)
+    left_edge, right_edge = (H // 2, 20, 0), (H // 2, 39, 0)
+    assert float(result[right_edge]) > 0.05
+    assert float(result[left_edge]) == 0.0
+
+
+def test_rim_map_follows_the_subject_mask_and_points_outward() -> None:
+    depth = np.full((H, W), 0.1, dtype=np.float32)
+    depth[10:30, 22:38] = 1.0  # the depth map's edge sits two pixels inside the mask's
+    mask = np.zeros((H, W), dtype=np.float32)
+    mask[10:30, 20:40] = 1.0
+    rim = shading.rim_field(depth, mask)
+    strength = np.linalg.norm(rim, axis=-1)
+    assert strength[H // 2, 20] > 0.6 and strength[H // 2, 39] > 0.6  # at the mask's edge
+    assert strength[H // 2, W // 2] == 0.0 and strength[2, 2] == 0.0
+    assert rim[H // 2, 20, 0] < 0 < rim[H // 2, 39, 0]  # left edge points left, right edge right
+    assert rim[10, W // 2, 1] > 0 > rim[29, W // 2, 1]  # top edge points up, bottom edge down
 
 
 def test_light_in_front_gives_no_rim() -> None:

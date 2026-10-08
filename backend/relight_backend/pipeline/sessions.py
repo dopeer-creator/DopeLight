@@ -12,8 +12,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-# aux packs two helper maps in one picture: red = where lights reach (0 = sky),
-# green = square root of the photo's large-scale brightness.
+# aux packs the helper maps in one picture: red = where lights reach (0 = sky),
+# green = square root of the photo's large-scale brightness, blue and alpha = the
+# rim map (image_io.save_aux).
+AUX_FILE = "aux_v2.png"  # v2 added the rim map; a session with only the old aux.png gets a new one
 MAP_NAMES = ("albedo_proxy", "normal", "normal_smooth", "depth", "mask", "aux")
 ORIGINAL_FILE = "original.bin"
 META_FILE = "meta.json"
@@ -80,4 +82,6 @@ def map_file(name: str, normals_method: str) -> str:
     """Normals are stored per method so switching method keeps the others cached."""
     if name in ("normal", "normal_smooth"):
         return f"{name}_{normals_method}.png"
+    if name == "aux":
+        return AUX_FILE
     return f"{name}.png"

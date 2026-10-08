@@ -34,6 +34,7 @@ from relight_backend.pipeline.shading import (  # noqa: E402
     GlobalSettings,
     Light,
     prepare_scene,
+    rim_field,
     shade_scene,
     srgb_to_linear,
     to_srgb8,
@@ -81,10 +82,12 @@ def build_maps() -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarr
     # The top-right corner is "sky": lights fade out there.
     reach = np.clip(((1.0 - xs) + ys - 0.35) / 0.15, 0.0, 1.0).astype(np.float32)
     Image.fromarray(albedo8, mode="RGB").save(OUT / "albedo.png")
-    save_aux(reach, large_scale_brightness(Image.open(OUT / "albedo.png")), OUT / "aux.png")
-    reach8, brightness = load_aux(OUT / "aux.png")
+    # The box is the "subject": its rim follows a mask. Without it only depth edges would.
+    rim = rim_field((depth16 / 65535.0).astype(np.float32), box.astype(np.float32))
+    save_aux(reach, large_scale_brightness(Image.open(OUT / "albedo.png")), OUT / "aux.png", rim)
+    reach8, brightness, rim8 = load_aux(OUT / "aux.png")
     helpers = {"normal_smooth": load_normals(OUT / "normal_smooth.png"), "reach": reach8,
-               "brightness": brightness}
+               "brightness": brightness, "rim": rim8}
     return albedo8, normals, depth16, helpers
 
 
@@ -154,6 +157,11 @@ def build_scenes() -> list[dict[str, Any]]:
         scene("back_sun", [light(type="directional", castShadows=True, intensity=2.0,
                                  position={"x": 0.9, "y": 0.5, "z": 0.02},
                                  target={"x": 0.3, "y": 0.5})]),
+        # Rim light: beside the box at its own height, and a soft one behind it.
+        scene("rim_side", [light(position={"x": 1.1, "y": 0.5, "z": 0.3}, intensity=3.0,
+                                 diffusion=0.1)]),
+        scene("rim_behind_soft", [light(position={"x": 0.9, "y": 0.2, "z": 0.05}, intensity=3.0,
+                                        diffusion=0.8)]),
         scene("eight_lights", eight),
         scene("globals", [light()],
               globals={"ambient": 0.4, "exposure": 0.7, "keepOriginalLight": 0.5,

@@ -22,6 +22,7 @@ from relight_backend.models import specs
 from relight_backend.models.base import Model
 from relight_backend.pipeline.normals_from_depth import normals_from_depth
 from relight_backend.pipeline.sessions import ORIGINAL_FILE, SessionMeta, SessionStore, map_file
+from relight_backend.pipeline.shading import rim_field
 from relight_backend.utils import downloads
 from relight_backend.utils.device import pick_device, pick_dtype
 from relight_backend.utils.image_io import (
@@ -221,7 +222,8 @@ def preprocess(
         save_normals(smooth_normals(load_normals(normals_path)), smooth_path)
     aux_path = folder / map_file("aux", options.normals)
     if not aux_path.exists():
-        save_aux(load_gray8(reach_path), large_scale_brightness(working), aux_path)
+        save_aux(load_gray8(reach_path), large_scale_brightness(working), aux_path,
+                 rim_field(depth, load_gray8(mask_path)))
 
     meta = SessionMeta(
         id=session_id,

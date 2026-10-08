@@ -49,7 +49,6 @@ from relight_backend.pipeline.shading import (
     Shaded,
     dilate_depth,
     linear_to_srgb,
-    outline_map,
     prepare_scene,
     shade_scene,
     srgb_to_linear,
@@ -184,14 +183,16 @@ def export(
     # preview, and scaled up with it: same look, and far cheaper than at full size.
     working = torch.from_numpy(working_depth)
     tops = _scale_up(dilate_depth(working).numpy(), width, height)
-    outline = _scale_up(outline_map(working).numpy(), width, height)
 
     smooth = normalize_vectors(_scale_up(
         load_normals(folder / map_file("normal_smooth", meta.normals_method)), width, height
     ))
-    working_reach, working_brightness = load_aux(folder / map_file("aux", meta.normals_method))
+    working_reach, working_brightness, working_rim = load_aux(
+        folder / map_file("aux", meta.normals_method)
+    )
     reach = _scale_up(working_reach, width, height)
     brightness = _scale_up(working_brightness, width, height)
+    rim = _scale_up(working_rim, width, height)
 
     active = [light for light in lights if light.enabled]
     suffix = FORMATS[options.format]
@@ -230,7 +231,7 @@ def export(
               for key, (_path, channels) in planned.items()}
 
     def render(device: torch.device) -> None:
-        scene = prepare_scene(albedo, normals, depth, device, tops, outline, smooth, reach,
+        scene = prepare_scene(albedo, normals, depth, device, tops, rim, smooth, reach,
                               brightness)
         strip = max(1, STRIP_PIXELS // width)
         for start in range(0, height, strip):

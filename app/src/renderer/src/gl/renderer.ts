@@ -19,7 +19,7 @@ export interface RelightMaps {
   normal: TexImageSource
   /** The same normals, blurred. */
   normalSmooth: TexImageSource
-  /** Helper maps: red = where lights reach, green = sqrt of large-scale brightness. */
+  /** Helper maps: red = where lights reach, green = sqrt of large-scale brightness, blue and alpha = the rim map. */
   aux: TexImageSource
   /** Depth 0..1 (1 = nearest), row by row from the top. */
   depth: Float32Array
@@ -41,65 +41,28 @@ export function dilateRadius(width: number): number {
   return Math.max(1, Math.floor(width * SHADING.shellDilate + 0.5))
 }
 
-/** Highest (or lowest) value within a square window of 2 * radius + 1: rows, then columns. */
-function windowExtreme(
-  values: Float32Array, width: number, height: number, radius: number, pick: (a: number, b: number) => number
-): Float32Array {
-  const rows = new Float32Array(values.length)
+/** Highest depth within a square window of 2 * radius + 1: rows, then columns. */
+export function dilateDepth(depth: Float32Array, width: number, height: number, radius: number): Float32Array {
+  const rows = new Float32Array(depth.length)
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const to = Math.min(width - 1, x + radius)
-      let best = values[y * width + Math.max(0, x - radius)]!
-      for (let i = Math.max(0, x - radius) + 1; i <= to; i++) best = pick(best, values[y * width + i]!)
+      let best = depth[y * width + Math.max(0, x - radius)]!
+      for (let i = Math.max(0, x - radius) + 1; i <= to; i++) best = Math.max(best, depth[y * width + i]!)
       rows[y * width + x] = best
     }
   }
-  const result = new Float32Array(values.length)
+  const result = new Float32Array(depth.length)
   for (let y = 0; y < height; y++) {
     const from = Math.max(0, y - radius)
     const to = Math.min(height - 1, y + radius)
     for (let x = 0; x < width; x++) {
       let best = rows[from * width + x]!
-      for (let i = from + 1; i <= to; i++) best = pick(best, rows[i * width + x]!)
+      for (let i = from + 1; i <= to; i++) best = Math.max(best, rows[i * width + x]!)
       result[y * width + x] = best
     }
   }
   return result
-}
-
-/** Highest depth within `radius` pixels. */
-export function dilateDepth(depth: Float32Array, width: number, height: number, radius: number): Float32Array {
-  return windowExtreme(depth, width, height, radius, Math.max)
-}
-
-/** Reach of the outline map, in multiples of the rim radius. Same as RIM_REACH in shading.py. */
-const RIM_REACH = [1, 2, 3, 4]
-
-/** Pixel unit of the outline's width for a map of this width. Same as rim_radius() in shading.py. */
-export function rimRadius(width: number): number {
-  return Math.max(1, Math.floor(width * SHADING.rimWidth + 0.5))
-}
-
-/**
- * Outline strength, 0..1: how much a pixel stands above the lowest depth near
- * it, averaged over four distances. It is 1 right on the near side of a depth
- * edge and fades over a few pixels inward. Same as outline_map() in shading.py.
- */
-export function outlineMap(depth: Float32Array, width: number, height: number): Float32Array {
-  const radius = rimRadius(width)
-  const outline = new Float32Array(depth.length)
-  let lowest = depth
-  let reached = 0
-  for (const reach of RIM_REACH) {
-    // Lowest-value windows compose: widening by the difference gives the larger window.
-    lowest = windowExtreme(lowest, width, height, (reach - reached) * radius, Math.min)
-    reached = reach
-    for (let i = 0; i < depth.length; i++) {
-      const step = (depth[i]! - lowest[i]!) / SHADING.rimEdgeScale
-      outline[i]! += Math.min(1, Math.max(0, step)) / RIM_REACH.length
-    }
-  }
-  return outline
 }
 
 /**
@@ -205,19 +168,17 @@ export class RelightRenderer {
 
     // 32-bit float keeps the full 16-bit depth precision; half float is the
     // fallback when the driver cannot filter 32-bit float textures.
-    // Three channels: the depth; the highest depth within a few pixels (for
-    // shadows of lights behind the surface); and the outline strength (rim light).
+    // Two channels: the depth, and the highest depth within a few pixels (for
+    // shadows of lights behind the surface).
     const tops = dilateDepth(maps.depth, maps.width, maps.height, dilateRadius(maps.width))
-    const outline = outlineMap(maps.depth, maps.width, maps.height)
-    const packed = new Float32Array(maps.depth.length * 3)
+    const packed = new Float32Array(maps.depth.length * 2)
     for (let i = 0; i < maps.depth.length; i++) {
-      packed[i * 3] = maps.depth[i]!
-      packed[i * 3 + 1] = tops[i]!
-      packed[i * 3 + 2] = outline[i]!
+      packed[i * 2] = maps.depth[i]!
+      packed[i * 2 + 1] = tops[i]!
     }
     const depth = this.createTexture(2, false)
-    const format = this.floatLinear ? gl.RGB32F : gl.RGB16F
-    gl.texImage2D(gl.TEXTURE_2D, 0, format, maps.width, maps.height, 0, gl.RGB, gl.FLOAT, packed)
+    const format = this.floatLinear ? gl.RG32F : gl.RG16F
+    gl.texImage2D(gl.TEXTURE_2D, 0, format, maps.width, maps.height, 0, gl.RG, gl.FLOAT, packed)
 
     const normalSmooth = this.createTexture(3, true)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, maps.normalSmooth)

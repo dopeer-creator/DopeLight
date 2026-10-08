@@ -73,16 +73,29 @@ def load_gray8(path: Path) -> FloatArray:
     return np.asarray(Image.open(path).convert("L"), dtype=np.float32) / 255.0
 
 
-def save_aux(reach: FloatArray, brightness: FloatArray, path: Path) -> None:
-    """Pack the two helper maps: red = reach, green = sqrt(brightness), blue unused."""
-    packed = np.dstack([reach, np.sqrt(np.clip(brightness, 0.0, 1.0)), np.zeros_like(reach)])
-    Image.fromarray(np.clip(packed * 255.0 + 0.5, 0, 255).astype(np.uint8), mode="RGB").save(path)
+def save_aux(
+    reach: FloatArray, brightness: FloatArray, path: Path, rim: FloatArray | None = None
+) -> None:
+    """Pack the helper maps into one RGBA picture.
+
+    Red = reach, green = sqrt(brightness), blue and alpha = the rim map's x and
+    y (shading.rim_field), each -1..1 stored as 128 + 127 * value so that zero
+    is exact. Without a rim map there is no rim anywhere.
+    """
+    vectors = np.zeros((*reach.shape, 2), dtype=np.float32) if rim is None else rim
+    packed = np.dstack([
+        np.clip(reach * 255.0 + 0.5, 0, 255),
+        np.clip(np.sqrt(np.clip(brightness, 0.0, 1.0)) * 255.0 + 0.5, 0, 255),
+        np.clip(np.rint(vectors * 127.0) + 128.0, 1, 255),
+    ])
+    Image.fromarray(packed.astype(np.uint8), mode="RGBA").save(path)
 
 
-def load_aux(path: Path) -> tuple[FloatArray, FloatArray]:
-    """(reach, brightness) from a file written by save_aux."""
-    data = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
-    return data[..., 0], data[..., 1] ** 2
+def load_aux(path: Path) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """(reach, brightness, rim map) from a file written by save_aux."""
+    data = np.asarray(Image.open(path).convert("RGBA"), dtype=np.float32)
+    rim = np.ascontiguousarray((data[..., 2:] - 128.0) / 127.0)
+    return data[..., 0] / 255.0, (data[..., 1] / 255.0) ** 2, rim
 
 
 def save_gray16(array: FloatArray, path: Path) -> None:

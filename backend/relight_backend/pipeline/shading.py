@@ -16,6 +16,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -33,11 +34,21 @@ SHADOW_REACH = 1.0  # how far a directional light's shadow ray travels
 SHADOW_THICKNESS = 0.15  # shell thickness of shapes, for lights behind the surface
 EMBED_FADE = 0.03  # how gradually a light counts as "behind" as it sinks under the surface
 SHELL_DILATE = 0.004  # radius of the "top nearby" filter, as a fraction of the map width
-RIM_STRENGTH = 1.5  # brightness of the outline glow from a light behind a shape
+# Rim light: a light beside or behind a shape lights the edge of the shape that
+# faces it. Estimated surfaces are too flat near an outline to catch that light
+# by themselves, so the outline's own direction decides.
+RIM_STRENGTH = 1.5  # brightness of the rim
 RIM_EDGE_SCALE = 0.08  # depth step that counts as a full outline
 RIM_WHITE = 0.35  # how much of the rim is the light's own colour rather than the surface's
-RIM_WIDTH = 0.0015  # pixel unit of the outline's width, as a fraction of the map width
-RIM_REACH = (1, 2, 3, 4)  # distances of the outline map, in multiples of that unit
+RIM_BAND = 0.024  # how far in from an outline a rim can reach, as a fraction of the map width
+RIM_SOFTEN = 0.7  # blur of the rim map, in pixels: takes the stair-steps off the outline
+RIM_EDGE_GAIN = 1.5  # gain after that blur, so the outermost pixel is at full strength again
+RIM_MASK_EDGE = 0.25  # mask value from which a pixel counts as the subject's outline
+MIN_SUBJECT_SHARE = 0.02  # a mask covering less of the picture than this is no subject
+MAX_SUBJECT_SHARE = 0.9  # ... nor one covering more than this
+RIM_THIN = 0.35  # share of that band a hard light (diffusion 0) covers; a soft one covers it all
+RIM_BACK = 0.6  # rim on every edge from a light straight behind, next to 1 for an edge facing it
+RIM_FRONT_FADE = 0.5  # the rim is gone once the light is this far round to the front
 # "Even out original light": lights act on the photo's colours scaled toward a
 # mid-grey exposure, so they do not just multiply the lighting already in it.
 FLATTEN_TARGET = 0.18  # the brightness regions are scaled toward
@@ -227,23 +238,60 @@ def dilate_depth(depth: Tensor) -> Tensor:
     return _window_max(depth, dilate_radius(depth.shape[1]))
 
 
-def rim_radius(width: int) -> int:
-    """Pixel unit of the outline's width. Same as rimRadius() in the app."""
-    return max(1, math.floor(width * RIM_WIDTH + 0.5))
+def rim_band(width: int) -> int:
+    """How many pixels in from an outline a rim can reach."""
+    return max(4, math.floor(width * RIM_BAND + 0.5))
 
 
-def outline_map(depth: Tensor) -> Tensor:
-    """Outline strength, 0..1: how much a pixel stands above the lowest depth near it.
-
-    Averaged over four distances, so it is 1 right on the near side of a depth
-    edge and fades over a few pixels inward. Same as outlineMap() in the app.
-    """
-    radius = rim_radius(depth.shape[1])
-    outline = torch.zeros_like(depth)
-    for reach in RIM_REACH:
-        lowest = -_window_max(-depth, reach * radius)
-        outline = outline + ((depth - lowest) / RIM_EDGE_SCALE).clamp(0.0, 1.0) / len(RIM_REACH)
+def _depth_outline(depth: FloatArray, band: int) -> FloatArray:
+    """1 on the near side of a drop in depth, falling evenly to 0 at `band` pixels inward."""
+    square = np.ones((3, 3), dtype=np.uint8)
+    plus = cv2.getStructuringElement(cv2.MORPH_CROSS, (3, 3))
+    outline = np.zeros_like(depth)
+    lowest = depth
+    for reach in range(band):
+        # A square and a plus in turn: the band is about as wide in every direction.
+        shape = square if reach % 2 == 0 else plus
+        lowest = np.asarray(cv2.erode(lowest, shape), dtype=np.float32)
+        outline += np.clip((depth - lowest) / RIM_EDGE_SCALE, 0.0, 1.0) / band
     return outline
+
+
+def _outward(field: FloatArray, sigma: float) -> FloatArray:
+    """Unit vectors (H, W, 2; x right, y up) pointing down the slope of a blurred field."""
+    smooth = cv2.GaussianBlur(field, (0, 0), sigma)
+    slope = np.dstack([-cv2.Sobel(smooth, cv2.CV_32F, 1, 0), cv2.Sobel(smooth, cv2.CV_32F, 0, 1)])
+    return np.asarray(slope / np.maximum(np.linalg.norm(slope, axis=-1, keepdims=True), 1e-6),
+                      dtype=np.float32)
+
+
+def rim_field(depth: FloatArray, mask: FloatArray | None = None) -> FloatArray:
+    """Where a rim light can land and which way is out there: (H, W, 2), x right, y up.
+
+    Each pixel holds a vector pointing out of the shape it is on. Its length is
+    1 at the outline and falls to 0 at rim_band() pixels inward; 0 elsewhere.
+
+    With a subject mask, the rim is the subject's alone and its outline is the
+    mask's, which follows the visible edge to the pixel. The depth map's edges
+    sit a few pixels off (a rim drawn from them leaves a dark line outside the
+    light), so they are used only for a photo with no subject to speak of.
+    """
+    band = rim_band(depth.shape[1])
+    sigma = band / 3.0
+    share = 0.0 if mask is None else float((mask > 0.5).mean())
+    if mask is None or not MIN_SUBJECT_SHARE <= share <= MAX_SUBJECT_SHARE:
+        ramp, outward = _depth_outline(depth, band), _outward(depth, sigma)
+    else:
+        # The outline pixels are part subject, part background; the rim covers them too.
+        inside = (mask > RIM_MASK_EDGE).astype(np.uint8)
+        from_edge = cv2.distanceTransform(inside, cv2.DIST_L2, 5)
+        ramp = np.asarray(np.clip(1.0 - (from_edge - 1.0) / band, 0.0, 1.0) * inside,
+                          dtype=np.float32)
+        outward = _outward(mask, sigma)
+    # The blur takes a third off the outermost pixel, the one that matters most; the gain
+    # gives it back.
+    strength = np.clip(cv2.GaussianBlur(ramp, (0, 0), RIM_SOFTEN) * RIM_EDGE_GAIN, 0.0, 1.0)
+    return np.asarray(outward * strength[..., None], dtype=np.float32)
 
 
 def _occlusion(
@@ -283,7 +331,7 @@ def _occlusion(
 
 def _contribution(
     light: Light, albedo: Tensor, normal: Tensor, position: Tensor, depth: Tensor, tops: Tensor,
-    outline: Tensor, aspect: float, noise: Tensor, steps: int, jitter: float,
+    rim_vectors: Tensor, aspect: float, noise: Tensor, steps: int, jitter: float,
 ) -> Tensor:
     device = albedo.device
     direction = torch.tensor(light_direction(light, aspect), device=device)
@@ -324,11 +372,21 @@ def _contribution(
         )
         shadow = 1.0 - light.shadow_strength * occluded
 
-    # Rim light: a light behind a shape makes its outline glow. The outline comes
-    # from depth edges; squaring keeps it thin and brightest right at the edge. It
-    # is not shadowed: the rim is exactly the light that gets past the shape.
-    from_behind = _smoothstep(0.0, 0.5, -to_light[..., 2])
-    rim = RIM_STRENGTH * from_behind * outline * outline
+    # Rim light: an edge glows when it faces the light, or when the light is behind
+    # the shape; not when the light is in front. Where the edges are and which way
+    # they face comes from the rim map (see rim_field). The rim is not shadowed:
+    # it is exactly the light that gets past the shape.
+    # 1 at the outline, 0 a band's width inside it
+    edge: Tensor = rim_vectors.norm(dim=-1)
+    outward = rim_vectors / edge.clamp_min(1e-4)[..., None]
+    facing = outward[..., 0] * to_light[..., 0] + outward[..., 1] * to_light[..., 1]
+    # A light behind the shape rims every edge, also those turned away from it.
+    from_back = (-to_light[..., 2]).clamp_min(0.0)
+    amount = (facing.clamp_min(0.0) + RIM_BACK * from_back).clamp(0.0, 1.0)
+    amount = amount * (1.0 - _smoothstep(0.0, RIM_FRONT_FADE, to_light[..., 2]))
+    reach = RIM_THIN + (1.0 - RIM_THIN) * light.diffusion  # a softer light, a broader rim
+    across = ((edge - (1.0 - reach)) / reach).clamp(0.0, 1.0)
+    rim = RIM_STRENGTH * amount * across * across * across  # brightest at the very edge
     rim_colour = albedo + (1.0 - albedo) * RIM_WHITE
 
     color = torch.tensor(light.color, device=device) * light.intensity
@@ -344,7 +402,7 @@ class Scene:
     normal: Tensor
     heights: Tensor  # depth 0..1
     tops: Tensor  # highest depth nearby (see dilate_depth)
-    outline: Tensor  # see outline_map
+    rim: Tensor  # (H, W, 2), see rim_field
     normal_smooth: Tensor  # blurred normals, for the smoothing setting
     reach: Tensor  # 1 where lights reach, 0 for sky and the far distance
     brightness: Tensor  # large-scale linear brightness of the photo
@@ -353,14 +411,15 @@ class Scene:
 def prepare_scene(
     albedo_srgb: FloatArray, normals: FloatArray, depth: FloatArray,
     device: torch.device | None = None,
-    tops: FloatArray | None = None, outline: FloatArray | None = None,
+    tops: FloatArray | None = None, rim: FloatArray | None = None,
     normal_smooth: FloatArray | None = None, reach: FloatArray | None = None,
     brightness: FloatArray | None = None,
 ) -> Scene:
     """Convert float32 maps (the app's map conventions) for shading.
 
-    `tops` and `outline` are derived from the depth when not given. An export
-    passes them in, made at the working size and scaled up like the depth itself.
+    `tops` and `rim` are derived from the depth when not given (a rim map made
+    that way knows no subject mask). An export passes them in, made at the
+    working size and scaled up like the depth itself.
     """
     device = device or torch.device("cpu")
     heights = torch.from_numpy(np.ascontiguousarray(depth)).to(device)
@@ -380,7 +439,7 @@ def prepare_scene(
         brightness=even,
         heights=heights,
         tops=dilate_depth(heights) if tops is None else given(tops),
-        outline=outline_map(heights) if outline is None else given(outline),
+        rim=given(rim_field(np.ascontiguousarray(depth)) if rim is None else rim),
     )
 
 
@@ -427,7 +486,7 @@ def shade_scene(
     per_light = [
         _contribution(
             light, lit_albedo, normal, position, scene.heights, scene.tops,
-            scene.outline[start:end], aspect, noise, shadow_steps, jitter,
+            scene.rim[start:end], aspect, noise, shadow_steps, jitter,
         ) * reach
         for light in active
     ]
