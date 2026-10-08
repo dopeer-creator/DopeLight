@@ -43,6 +43,9 @@ RIM_REACH = (1, 2, 3, 4)  # distances of the outline map, in multiples of that u
 FLATTEN_TARGET = 0.18  # the brightness regions are scaled toward
 FLATTEN_FLOOR = 0.02  # regions darker than this are treated as this bright
 FLATTEN_MAX = 4.0  # never brighten by more than this
+# Under a light nothing is perfectly black: surfaces count as at least this bright
+# (times the Even light amount), so coloured light shows on dark backgrounds.
+ALBEDO_FLOOR = 0.06
 SOFT_CLIP_START = 0.8  # values above this are rolled off toward 1
 TARGET_HEIGHT = 0.5  # spot/directional lights aim at this fraction of DEPTH_SCALE
 DEFAULT_SHADOW_STEPS = 24
@@ -405,6 +408,7 @@ def shade_scene(
     # What the lights fall on: the photo's colours, evened out toward mid exposure.
     even = FLATTEN_TARGET / scene.brightness[start:end].clamp_min(FLATTEN_FLOOR)
     lit_albedo = albedo * (even**settings.flatten).clamp(max=FLATTEN_MAX)[..., None]
+    lit_albedo = lit_albedo.clamp_min(ALBEDO_FLOOR * settings.flatten)
     reach = scene.reach[start:end, :, None]
     u = (torch.arange(width, device=device, dtype=torch.float32) + 0.5) / width
     v = (torch.arange(start, end, device=device, dtype=torch.float32) + 0.5) / height

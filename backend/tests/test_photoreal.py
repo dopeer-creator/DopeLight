@@ -133,7 +133,31 @@ def test_ratio_transfer_keeps_the_originals_detail() -> None:
     ratio = np.full((32, 48, 3), 2.0, dtype=np.float32)  # "twice as bright", low resolution
     relit = apply_ratio(full, ratio)
     assert relit.shape == full.shape
-    assert np.allclose(relit, photoreal._linear(full) * 2.0, atol=1e-5)  # texture intact
+    eps = photoreal.RATIO_EPSILON
+    expected = (photoreal._linear(full) + eps) * 2.0 - eps
+    assert np.allclose(relit, expected, atol=1e-5)  # texture intact
+
+
+def test_a_black_background_can_receive_light() -> None:
+    black = np.zeros((32, 48, 3), dtype=np.float32)
+    glow = np.zeros((32, 48, 3), dtype=np.float32)
+    glow[..., 2] = 0.5  # the light paints it blue
+    relit = apply_ratio(black, lighting_ratio(black, glow, hint=glow))
+    assert relit[16, 24, 2] > 0.15 and relit[16, 24, 0] < 0.01  # blue arrived, red did not
+
+
+def test_a_coloured_light_comes_through_in_full() -> None:
+    grey = np.full((40, 60, 3), 0.5, dtype=np.float32)
+    model_says = np.full((40, 60, 3), 0.7, dtype=np.float32)  # brighter, but colourless
+    blue_light = grey.copy()
+    blue_light[..., 2] = 0.95  # the preview: a strongly blue light
+    blue_light[..., 0] = 0.35
+    subject = np.ones((40, 60), dtype=np.float32)
+    ratio = lighting_ratio(grey, model_says, blue_light, subject)[20, 30]
+    lin, eps = photoreal._linear, photoreal.RATIO_EPSILON
+    # Blue against red is as strong as in the preview: far past the old 1.5x cap.
+    wanted = (lin(blue_light)[0, 0, 2] + eps) / (lin(blue_light)[0, 0, 0] + eps)
+    assert ratio[2] / ratio[0] == pytest.approx(wanted, rel=0.03) and wanted > 5
 
 
 def test_adherence_maps_to_less_freedom() -> None:
@@ -216,13 +240,14 @@ def test_photoreal_exports(session: Any) -> None:
     original16, relit16 = original.astype(np.int64) * 257, relit.astype(np.int64)
     rebuilt = original16 + layer.astype(np.int64)
     brighter = relit16 >= original16
-    assert brighter.mean() > 0.8  # the unchanged half sits within rounding of the original
+    # Coloured lights lower some channels while raising others, so not every value is brighter.
+    assert brighter.mean() > 0.6
     assert np.abs(rebuilt - relit16)[brighter].max() <= 3
     assert (layer[~brighter] == 0).all()
 
     # Multiply layer: 0.5 means no change; the left half was brightened 1.6x in sRGB values.
     multiply = load_image_array(multiply_path) / 65535.0
-    assert abs(multiply[:, 70:].mean() - 0.5) < 0.03 and multiply[:, :30].mean() > 0.9
+    assert abs(multiply[:, 70:].mean() - 0.5) < 0.1 and multiply[:, :30].mean() > 0.9
 
     with pytest.raises(ValueError):
         run("x.png", kind="per_light")

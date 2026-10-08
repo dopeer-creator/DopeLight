@@ -49,6 +49,7 @@ def test_constants_match_the_app() -> None:
         "flattenTarget": shading.FLATTEN_TARGET,
         "flattenFloor": shading.FLATTEN_FLOOR,
         "flattenMax": shading.FLATTEN_MAX,
+        "albedoFloor": shading.ALBEDO_FLOOR,
         "softClipStart": shading.SOFT_CLIP_START,
         "targetHeight": shading.TARGET_HEIGHT,
         "defaultShadowSteps": shading.DEFAULT_SHADOW_STEPS,

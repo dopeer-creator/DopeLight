@@ -104,10 +104,10 @@ JSON lines in `<data>/logs/`: `main.log` (Electron main and renderer warnings/er
 **What is taken from the result.** The model relights well, but it also repaints: on the first test it changed the face, turned a blue jacket teal, and replaced the backdrop with invented bokeh. So the result is never shown as it is. `lighting_ratio` keeps:
 
 - the change in **brightness** (relit / original luminance), smoothed with a guided filter so the original's edges stay;
-- only a **broad, limited change in colour**: per channel at most 1.5 times more or less than brightness, blurred over 4 % of the width. A light tints a region; it does not recolour objects;
+- the **colour from the user's lights, in full**: the per-channel tint of the preview shading (the hint) replaces the model's colour. A saturated blue light gives a saturated blue result, and the model cannot recolour objects because its colour is not used. (The first version instead capped the model's colour change at 1.5 times; that muted coloured lights, and the user's Photoshop references show strong coloured light, so it was replaced on 2026-10-08. The cap survives only for the no-hint case.)
 - and only **on the subject** (the Phase 1 mask, feathered). Elsewhere the ratio comes from the preview shading. IC-Light is a foreground relighter. If the mask covers under 2 % of the picture, the model's light is used everywhere.
 
-That ratio is scaled up and multiplied into the full-size original in linear light (bounded to 0.05..12). Texture, text, and identity come from the original; only light comes from the model.
+The ratio is measured as `(relit + e) / (original + e)` with `e = 0.03`, scaled up, and applied as the exact inverse, `(original + e) × ratio − e`, in linear light (ratio bounded to 0.05..12). Bright areas are scaled, keeping their texture; near-black areas gain light additively, so a coloured light can show on a black background, which a plain multiplication never could. Texture, text, and identity come from the original; only light comes from the model.
 
 **Memory and failure.** On the GPU: half precision, attention slicing, VAE tiling, model CPU offload. On out-of-memory it retries at 0.8 and 0.64 of the size with sequential offload, and says so in the result. Without a GPU the diffusion size is capped at 512 px, also noted. Cancel is checked at every denoising step.
 
@@ -117,7 +117,7 @@ That ratio is scaled up and multiplied into the full-size original in linear lig
 
 **Measured on the build laptop (CPU, no GPU), 2026-10-08, portrait sample:** 384 × 448, 12 steps, no detail pass: 131 s. Through the app, 384 × 512, 8 steps: 101 s. Judged by eye: skin shading and falloff look natural and clearly better than the preview; the face, name tag, and backdrop stay the original's. **Not yet run on the RTX 4050:** speed, peak VRAM at 768 px with the detail pass, and how half precision looks are unknown.
 
-**Limits.** Results depend on the seed. Strongly coloured lights come out less saturated than in the preview (the colour limit). The background only gets the preview's light. Low diffusion sizes (as on this laptop) give soft light shapes.
+**Limits.** Results depend on the seed. The colour of the light always follows the preview, so the model's own colour ideas (a warm bounce, say) are dropped. The background gets the preview's light, not the model's. Low diffusion sizes (as on this laptop) give soft light shapes.
 ## Export (Phase 3)
 
 `pipeline/export.py`, behind `POST /session/{id}/export`. The backend does the rendering, not an off-screen WebGL pass: it has no texture-size limit, writes 16-bit files, and uses the same `shading.py` the shader is checked against.
@@ -247,6 +247,8 @@ The user's first real test (a bright outdoor game screenshot) looked wrong in fo
 | Wet, plastic-looking highlights | New lights have **specular 0**. The slider remains |
 | Blocky patches, noise, false bumps | **Smooth surface** (scene setting, default 0.3): normals lean toward a blurred copy (Gaussian, 0.6 % of the width) made at preprocess time |
 | Bright photos blew out, and new light just multiplied old light | **Even light** (scene setting, default 0.5): lights act on the photo's colours scaled by `(0.18 / brightness)^amount` (capped at 4), where `brightness` is the photo's luminance blurred by 4 % of the width. Bright regions take less new light, dark ones more. This is the brief's optional shading flattening; the base image is not changed |
+
+Later the same day, for the user's coloured-light references: under a light nothing counts as darker than `0.06 × Even light` (`ALBEDO_FLOOR`), so a coloured light also shows on dark backgrounds instead of vanishing on black.
 
 Preprocess writes the helper maps: `normal_smooth_<method>.png`, `reach.png` (kept beside the depth), and `aux.png` (red = reach, green = square root of brightness), which the app loads as two more textures. Sessions made before this get them on the next open (the depth model runs again, about 2 s on CPU).
 

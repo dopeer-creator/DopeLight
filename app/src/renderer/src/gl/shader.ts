@@ -48,6 +48,7 @@ const float RIM_WHITE = ${f(SHADING.rimWhite)};
 const float FLATTEN_TARGET = ${f(SHADING.flattenTarget)};
 const float FLATTEN_FLOOR = ${f(SHADING.flattenFloor)};
 const float FLATTEN_MAX = ${f(SHADING.flattenMax)};
+const float ALBEDO_FLOOR = ${f(SHADING.albedoFloor)};
 const float SOFT_CLIP_START = ${f(SHADING.softClipStart)};
 
 uniform sampler2D uAlbedo; // sRGB texture: sampling returns linear light
@@ -197,7 +198,8 @@ void main() {
   // so new light does not just multiply the lighting already in the photo.
   float brightness = aux.g * aux.g;
   float even = min(pow(FLATTEN_TARGET / max(brightness, FLATTEN_FLOOR), uFlatten), FLATTEN_MAX);
-  vec3 litAlbedo = albedo * even;
+  // Nothing is perfectly black under a light, so coloured light shows on dark backgrounds.
+  vec3 litAlbedo = max(albedo * even, vec3(ALBEDO_FLOOR * uFlatten));
 
   vec3 lightSum = vec3(0.0);
   for (int i = 0; i < MAX_LIGHTS; i++) {

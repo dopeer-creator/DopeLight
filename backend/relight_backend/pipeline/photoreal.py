@@ -60,7 +60,8 @@ RATIO_FILE = "ratio.npy"
 PREVIEW_FILE = "preview.jpg"
 PREVIEW_LONG_EDGE = 1536
 RATIO_MIN, RATIO_MAX = 0.05, 12.0  # sane bounds for relit / original
-RATIO_EPSILON = 0.02  # added to both sides of the ratio; tames it in near-black areas
+RATIO_EPSILON = 0.03  # added to both sides of the ratio: tames it in near-black areas,
+# and is what lets those areas gain light (see apply_ratio)
 GUIDED_RADIUS = 0.008  # smoothing radius of the ratio, as a fraction of the width
 GUIDED_EPSILON = 0.01
 COLOUR_LIMIT = 1.5  # a channel may change at most this much more (or less) than brightness
@@ -138,16 +139,22 @@ def lighting_ratio(
     original: FloatArray, relit: FloatArray,
     hint: FloatArray | None = None, subject: FloatArray | None = None,
 ) -> FloatArray:
-    """relit / original in linear light, cleaned up. Inputs: sRGB floats, same size.
+    """The change in light, as a per-channel ratio. Inputs: sRGB floats, same size.
 
-    The diffusion model relights well but also repaints: it changes colours of
-    things and invents backgrounds. So from its result this keeps
-    - the change in brightness, smoothed with the original's edges kept, and
-    - only a broad, limited change in colour (a light tints a region; it does
-      not turn a blue jacket teal),
-    and, when `hint` and `subject` are given, only on the subject. Elsewhere
-    the ratio comes from the hint (the preview's own shading), because the
-    model is a foreground relighter and its backgrounds are inventions.
+    The diffusion model shades realistically but also repaints: it recolours
+    things and invents backgrounds. So brightness and colour are taken from
+    different places:
+
+    - **Brightness** (how light and shadow fall) comes from the model, smoothed
+      with the original's edges kept.
+    - **Colour** comes from `hint`, the preview's own shading of the user's
+      lights, in full: a saturated blue light gives a saturated blue result. The
+      model's colour is not used, so it cannot turn a blue jacket teal.
+    - Off the subject (`subject` mask), the whole ratio comes from the hint. The
+      model is a foreground relighter and its backgrounds are inventions.
+
+    Without a hint there is no record of the lights, and a broad, limited part
+    of the model's own colour change is kept instead.
     """
     original_linear, relit_linear = _linear(original), _linear(relit)
     luminance = np.asarray(original_linear @ _LUMA, dtype=np.float32)
@@ -156,24 +163,36 @@ def lighting_ratio(
 
     brightness = _raw_ratio(luminance[..., None], (relit_linear @ _LUMA)[..., None])
     brightness = guided_filter(luminance, brightness, radius, GUIDED_EPSILON)
-    tint = _raw_ratio(original_linear, relit_linear) / np.maximum(brightness, 1e-3)
-    tint = np.clip(tint, 1.0 / COLOUR_LIMIT, COLOUR_LIMIT).astype(np.float32)
-    broad_tint = cv2.GaussianBlur(tint, (0, 0), max(1.0, width * COLOUR_SIGMA))
-    ratio = np.asarray(brightness * broad_tint, dtype=np.float32)
 
-    if hint is not None and subject is not None:
-        if float(subject.mean()) >= MIN_SUBJECT_SHARE:  # else: no subject found, use it all
-            soft = cv2.GaussianBlur(subject, (0, 0), max(1.0, width * SUBJECT_FEATHER))
-            preview = _raw_ratio(original_linear, _linear(hint))
-            ratio = soft[..., None] * ratio + (1.0 - soft[..., None]) * preview
+    if hint is None:
+        tint = _raw_ratio(original_linear, relit_linear) / np.maximum(brightness, 1e-3)
+        tint = np.clip(tint, 1.0 / COLOUR_LIMIT, COLOUR_LIMIT).astype(np.float32)
+        broad_tint = cv2.GaussianBlur(tint, (0, 0), max(1.0, width * COLOUR_SIGMA))
+        ratio = np.asarray(brightness * broad_tint, dtype=np.float32)
+        return np.asarray(np.clip(ratio, RATIO_MIN, RATIO_MAX), dtype=np.float32)
+
+    hint_linear = _linear(hint)
+    preview = _raw_ratio(original_linear, hint_linear)  # the preview's light, exactly
+    preview_brightness = _raw_ratio(luminance[..., None], (hint_linear @ _LUMA)[..., None])
+    light_colour = preview / np.maximum(preview_brightness, 1e-3)  # colour without brightness
+    ratio = np.asarray(brightness * light_colour, dtype=np.float32)
+
+    if subject is not None and float(subject.mean()) >= MIN_SUBJECT_SHARE:
+        soft = cv2.GaussianBlur(subject, (0, 0), max(1.0, width * SUBJECT_FEATHER))
+        ratio = soft[..., None] * ratio + (1.0 - soft[..., None]) * preview
     return np.asarray(np.clip(ratio, RATIO_MIN, RATIO_MAX), dtype=np.float32)
 
 
 def apply_ratio(original: FloatArray, ratio: FloatArray) -> FloatArray:
-    """Full-size relit image (linear light, 0..1) from the original (sRGB floats) and a ratio."""
+    """Full-size relit image (linear light, 0..1) from the original (sRGB floats) and a ratio.
+
+    The exact inverse of how the ratio was measured, (relit + e) / (original + e):
+    bright areas are scaled, keeping their texture, while near-black areas gain
+    light additively. A plain multiplication could never light a black background.
+    """
     height, width = original.shape[:2]
-    relit = np.clip(_linear(original) * _resize(ratio, (width, height)), 0.0, 1.0)
-    return np.asarray(relit, dtype=np.float32)
+    scaled = (_linear(original) + RATIO_EPSILON) * _resize(ratio, (width, height))
+    return np.asarray(np.clip(scaled - RATIO_EPSILON, 0.0, 1.0), dtype=np.float32)
 
 
 def make_hint(folder: Path, normals_method: str, size: tuple[int, int], lights: list[Light],
