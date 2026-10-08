@@ -64,6 +64,7 @@ class Light:
     cast_shadows: bool = False
     shadow_strength: float = 0.7
     enabled: bool = True
+    name: str = "Light"  # only used to name exported files
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> Light:
@@ -87,6 +88,7 @@ class Light:
             cast_shadows=bool(data["castShadows"]),
             shadow_strength=float(data["shadowStrength"]),
             enabled=bool(data.get("enabled", True)),
+            name=str(data.get("name", "Light")),
         )
 
 
@@ -112,6 +114,9 @@ class Shaded:
     relit: Tensor
     light_layer: Tensor  # sum of all light contributions, without the base image
     per_light: list[Tensor] = field(default_factory=list)
+    base: Tensor | None = None  # the image with the scene settings but no lights
+    # Per-light contributions, exposed but NOT soft-clipped (for splitting a layer by light).
+    raw_per_light: list[Tensor] = field(default_factory=list)
 
 
 def srgb_to_linear(value: Tensor) -> Tensor:
@@ -139,10 +144,16 @@ def _fract(value: Tensor) -> Tensor:
     return value - torch.floor(value)
 
 
-def pixel_noise(height: int, width: int, device: torch.device) -> Tensor:
-    """Interleaved gradient noise in [0, 1), indexed like gl_FragCoord (origin bottom-left)."""
+def pixel_noise(
+    height: int, width: int, device: torch.device, rows: tuple[int, int] | None = None
+) -> Tensor:
+    """Interleaved gradient noise in [0, 1), indexed like gl_FragCoord (origin bottom-left).
+
+    `rows` limits the result to rows [start, end) of the image.
+    """
+    start, end = rows or (0, height)
     frag_x = torch.arange(width, device=device, dtype=torch.float32) + 0.5
-    frag_y = (height - 1 - torch.arange(height, device=device, dtype=torch.float32)) + 0.5
+    frag_y = (height - 1 - torch.arange(start, end, device=device, dtype=torch.float32)) + 0.5
     dotted = frag_x[None, :] * 0.06711056 + frag_y[:, None] * 0.00583715
     return _fract(52.9829189 * _fract(dotted))
 
@@ -187,10 +198,20 @@ def dilate_radius(width: int) -> int:
     return max(1, math.floor(width * SHELL_DILATE + 0.5))
 
 
+def _window_max(values: Tensor, radius: int) -> Tensor:
+    """Highest value within a square window of 2 * radius + 1.
+
+    Done along rows, then columns: the same result as one square window, at a
+    cost that grows with the radius instead of its square (matters at full size).
+    """
+    size = 2 * radius + 1
+    rows = F.max_pool2d(values[None, None], (1, size), stride=1, padding=(0, radius))
+    return F.max_pool2d(rows, (size, 1), stride=1, padding=(radius, 0))[0, 0]
+
+
 def dilate_depth(depth: Tensor) -> Tensor:
     """Highest depth within dilate_radius pixels of each pixel."""
-    radius = dilate_radius(depth.shape[1])
-    return F.max_pool2d(depth[None, None], 2 * radius + 1, stride=1, padding=radius)[0, 0]
+    return _window_max(depth, dilate_radius(depth.shape[1]))
 
 
 def rim_radius(width: int) -> int:
@@ -207,8 +228,7 @@ def outline_map(depth: Tensor) -> Tensor:
     radius = rim_radius(depth.shape[1])
     outline = torch.zeros_like(depth)
     for reach in RIM_REACH:
-        size = reach * radius
-        lowest = -F.max_pool2d(-depth[None, None], 2 * size + 1, stride=1, padding=size)[0, 0]
+        lowest = -_window_max(-depth, reach * radius)
         outline = outline + ((depth - lowest) / RIM_EDGE_SCALE).clamp(0.0, 1.0) / len(RIM_REACH)
     return outline
 
@@ -225,8 +245,8 @@ def _occlusion(
     the gap behind them.
     """
     soft = SHADOW_SOFT_MIN + (SHADOW_SOFT_MAX - SHADOW_SOFT_MIN) * diffusion
-    occluded = torch.zeros_like(depth)
-    heights = torch.stack([depth, tops])[None]
+    occluded = torch.zeros_like(position[..., 0])  # the pixels being shaded (may be a strip)
+    heights = torch.stack([depth, tops])[None]  # the whole map, for lookups along the ray
     for step in range(steps):
         t = (step + 0.5 + jitter) / steps
         sample = position + ray * t[..., None]
@@ -257,7 +277,7 @@ def _contribution(
 
     if light.type == "directional":
         to_light = (-direction).expand_as(position)
-        attenuation = torch.ones_like(depth)
+        attenuation = torch.ones_like(position[..., 0])
         ray = to_light * SHADOW_REACH
     else:
         ray = torch.tensor(light_position(light, aspect), device=device) - position
@@ -279,7 +299,7 @@ def _contribution(
     n_dot_h = (normal * half).sum(dim=-1).clamp_min(0.0)
     specular = light.specular * n_dot_h**light.shininess * _smoothstep(0.0, SPEC_FADE, n_dot_l)
 
-    shadow = torch.ones_like(depth)
+    shadow = torch.ones_like(position[..., 0])
     if light.cast_shadows and light.shadow_strength > 0.0:
         embed = light_embed(light, depth, aspect)
         behind = float(_smoothstep(0.0, EMBED_FADE, torch.tensor(embed)))
@@ -303,6 +323,95 @@ def _contribution(
     return color * attenuation[..., None] * (lit + rim[..., None] * rim_colour)
 
 
+@dataclass
+class Scene:
+    """The maps, converted once and kept on one device. Shapes (H, W[, 3])."""
+
+    albedo: Tensor  # linear light
+    normal: Tensor
+    heights: Tensor  # depth 0..1
+    tops: Tensor  # highest depth nearby (see dilate_depth)
+    outline: Tensor  # see outline_map
+
+
+def prepare_scene(
+    albedo_srgb: FloatArray, normals: FloatArray, depth: FloatArray,
+    device: torch.device | None = None,
+    tops: FloatArray | None = None, outline: FloatArray | None = None,
+) -> Scene:
+    """Convert float32 maps (the app's map conventions) for shading.
+
+    `tops` and `outline` are derived from the depth when not given. An export
+    passes them in, made at the working size and scaled up like the depth itself.
+    """
+    device = device or torch.device("cpu")
+    heights = torch.from_numpy(np.ascontiguousarray(depth)).to(device)
+
+    def given(values: FloatArray) -> Tensor:
+        return torch.from_numpy(np.ascontiguousarray(values)).to(device)
+
+    return Scene(
+        albedo=srgb_to_linear(torch.from_numpy(np.ascontiguousarray(albedo_srgb)).to(device)),
+        normal=F.normalize(torch.from_numpy(np.ascontiguousarray(normals)).to(device), dim=-1),
+        heights=heights,
+        tops=dilate_depth(heights) if tops is None else given(tops),
+        outline=outline_map(heights) if outline is None else given(outline),
+    )
+
+
+def shade_scene(
+    scene: Scene,
+    lights: list[Light],
+    settings: GlobalSettings,
+    *,
+    shadow_steps: int = DEFAULT_SHADOW_STEPS,
+    jitter: float = 1.0,
+    rows: tuple[int, int] | None = None,
+) -> Shaded:
+    """Shade the scene, or only rows [start, end) of it.
+
+    A strip gives exactly the pixels the whole image would: shadows still look
+    up the full depth map. Large exports go strip by strip to bound memory.
+    """
+    device = scene.heights.device
+    height, width = scene.heights.shape
+    start, end = rows or (0, height)
+    aspect = height / width
+
+    albedo, normal = scene.albedo[start:end], scene.normal[start:end]
+    u = (torch.arange(width, device=device, dtype=torch.float32) + 0.5) / width
+    v = (torch.arange(start, end, device=device, dtype=torch.float32) + 0.5) / height
+    position = torch.stack(
+        [
+            u[None, :].expand(end - start, width),
+            ((1.0 - v) * aspect)[:, None].expand(end - start, width),
+            DEPTH_SCALE * scene.heights[start:end],
+        ],
+        dim=-1,
+    )
+    noise = pixel_noise(height, width, device, (start, end))
+
+    active = [light for light in lights if light.enabled][:MAX_LIGHTS]
+    per_light = [
+        _contribution(
+            light, albedo, normal, position, scene.heights, scene.tops, scene.outline[start:end],
+            aspect, noise, shadow_steps, jitter,
+        )
+        for light in active
+    ]
+    light_sum = torch.stack(per_light).sum(dim=0) if per_light else torch.zeros_like(albedo)
+
+    gain = 2.0**settings.exposure
+    base = albedo * (settings.keep_original_light + settings.ambient)
+    return Shaded(
+        relit=soft_clip((base + light_sum) * gain),
+        light_layer=soft_clip(light_sum * gain),
+        per_light=[soft_clip(layer * gain) for layer in per_light],
+        base=soft_clip(base * gain),
+        raw_per_light=[layer * gain for layer in per_light],
+    )
+
+
 def shade(
     albedo_srgb: FloatArray,
     normals: FloatArray,
@@ -315,44 +424,8 @@ def shade(
     device: torch.device | None = None,
 ) -> Shaded:
     """Shade at the maps' own resolution. Inputs are float32 in the app's map conventions."""
-    device = device or torch.device("cpu")
-    albedo = srgb_to_linear(torch.from_numpy(np.ascontiguousarray(albedo_srgb)).to(device))
-    normal = F.normalize(torch.from_numpy(np.ascontiguousarray(normals)).to(device), dim=-1)
-    heights = torch.from_numpy(np.ascontiguousarray(depth)).to(device)
-
-    height, width = heights.shape
-    aspect = height / width
-    u = (torch.arange(width, device=device, dtype=torch.float32) + 0.5) / width
-    v = (torch.arange(height, device=device, dtype=torch.float32) + 0.5) / height
-    position = torch.stack(
-        [
-            u[None, :].expand(height, width),
-            ((1.0 - v) * aspect)[:, None].expand(height, width),
-            DEPTH_SCALE * heights,
-        ],
-        dim=-1,
-    )
-    noise = pixel_noise(height, width, device)
-    tops = dilate_depth(heights)
-    outline = outline_map(heights)
-
-    active = [light for light in lights if light.enabled][:MAX_LIGHTS]
-    per_light = [
-        _contribution(
-            light, albedo, normal, position, heights, tops, outline, aspect, noise, shadow_steps,
-            jitter,
-        )
-        for light in active
-    ]
-    light_sum = torch.stack(per_light).sum(dim=0) if per_light else torch.zeros_like(albedo)
-
-    gain = 2.0**settings.exposure
-    base = albedo * (settings.keep_original_light + settings.ambient)
-    return Shaded(
-        relit=soft_clip((base + light_sum) * gain),
-        light_layer=soft_clip(light_sum * gain),
-        per_light=[soft_clip(layer * gain) for layer in per_light],
-    )
+    scene = prepare_scene(albedo_srgb, normals, depth, device)
+    return shade_scene(scene, lights, settings, shadow_steps=shadow_steps, jitter=jitter)
 
 
 def to_srgb8(linear: Tensor) -> np.ndarray[Any, np.dtype[np.uint8]]:

@@ -217,7 +217,7 @@ def test_light_from_app_json() -> None:
     assert light == Light(
         type="spot", x=0.1, y=0.2, z=0.9, target_x=0.6, target_y=0.7, color=(1.0, 0.5, 0.25),
         intensity=2.0, diffusion=0.4, radius=1.2, specular=0.3, shininess=50.0, cone_angle=35.0,
-        cone_softness=0.6, cast_shadows=True, shadow_strength=0.8, enabled=False,
+        cone_softness=0.6, cast_shadows=True, shadow_strength=0.8, enabled=False, name="Key",
     )
     settings = GlobalSettings.from_json({"ambient": 0.2, "exposure": -1, "keepOriginalLight": 0.4})
     assert settings == GlobalSettings(ambient=0.2, exposure=-1.0, keep_original_light=0.4)
