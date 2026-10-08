@@ -1,4 +1,4 @@
-# Relight — working notes
+# Dope Light — working notes
 
 Local, free, Photoshop-style image relighting desktop app. Full brief:
 `C:\Users\Admin\Downloads\relight-app-claude-code-prompt.md` (read it before any phase).
@@ -51,7 +51,9 @@ From repo root:
 
 - **Versions:** Electron 44, `electron-vite` 5, Vite 7 (not 8: `electron-vite` 5 supports up to 7), React 19, TypeScript 5.9, Zustand 5. Python 3.11 via uv, FastAPI, PyTorch 2.14, transformers 5, diffusers 0.40.
 - **PyTorch build:** extras `cpu` and `cu126` in `backend/pyproject.toml`, mutually exclusive. `cu126` chosen for the RTX 4050 (works with older drivers than `cu130`). Not yet run on the target.
-- **App name:** `APP_NAME` in `app/src/shared/constants.ts` and `backend/relight_backend/constants.py`. Also `<title>` in `app/src/renderer/index.html` and `name` in `app/package.json`.
+- **App name: Dope Light** (the user's decision, 2026-10-08; "Relight" was the brief's working title). Set in `APP_NAME` in `app/src/shared/constants.ts` and `backend/relight_backend/constants.py`, `<title>` in `app/src/renderer/index.html`, `productName` in `app/package.json`. Internal identifiers keep the old word on purpose: the Python package `relight_backend`, the `RELIGHT_*` environment variables. The data folder is `%APPDATA%\Dope Light`; an existing `%APPDATA%\Relight` is renamed to it on first start (`app/src/main/migrate.ts`, `utils/paths.py`) so models are not downloaded again.
+- **Logo:** the user's design, redrawn as vector in `app/resources/logo.svg` (a D lit by a cone of light, gold on dark; wordmark "dope" off-white + "light" amber). `npm run icons` renders `icon.png` and `icon.ico` from it. The UI palette follows the logo at the user's request (2026-10-08): warm near-black, off-white text, amber accent; all colours are variables at the top of `app/src/renderer/src/styles.css`.
+- **Releases on GitHub:** the user asked for them on 2026-10-08. That is Phase 6 (NSIS installer, auto-update, release workflow) and needs Phase 5's first-run setup first (a packaged app has no Python environment yet: bundle `uv`, create the venv in the data folder, download models with a progress screen).
 - **Backend launch:** Electron main picks a free port, makes a random token, spawns the venv Python. Token goes through env var `RELIGHT_TOKEN`. All endpoints need `Authorization: Bearer <token>`.
 - **No orphans:** backend gets `--parent-pid` and waits on that process handle; plus `taskkill /T /F` on normal quit. (Phase 0 used "exit when stdin closes". That broke once PyTorch was installed: on Windows a thread blocked reading the stdin pipe made `import torch` hang in another thread, so `/health` never answered. Do not go back to stdin watching.)
 - **Lazy heavy imports:** `main.py` must not import torch/transformers at module level; jobs import them. `models/specs.py` is pure data for the same reason.

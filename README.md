@@ -1,4 +1,4 @@
-# Relight
+# Dope Light
 
 Local, free image relighting for Windows. Open an image, add virtual lights, drag them, and export the relit image or a light-only layer. Everything runs on your own PC; no accounts, no cloud, no telemetry.
 
@@ -93,7 +93,7 @@ Starts the real app, opens a sample photo, and acts like a user (drag, wheel, ke
 
 ## Where files are stored
 
-`%APPDATA%\Relight\` holds `models\` (downloaded weights), `sessions\` (maps per opened image), and `logs\`. Set the `RELIGHT_DATA_DIR` environment variable to use another folder.
+`%APPDATA%\Dope Light\` holds `models\` (downloaded weights), `sessions\` (maps per opened image), and `logs\`. Set the `RELIGHT_DATA_DIR` environment variable to use another folder.
 
 ## Layout
 
