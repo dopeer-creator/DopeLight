@@ -4,7 +4,10 @@
         ../samples/fighter.jpg ../docs/scenes/fighter-yellow-top-red-trim.json ../render-out/fighter
 
 Paths are relative to `backend/`. Options after the three paths: `--long-edge 768`,
-`--steps 25`, `--adherence 0.5`, `--no-highres`.
+`--steps 25`, `--adherence 0.5`, `--no-highres`, and `--preview-only`: no AI
+model, only the preview's own shading at the working size, written as
+`shading.png` in a second or two. That is the quick way to judge a change to
+the shading (shadows, rim light, falloff).
 
 Preprocesses the photo (cached after the first time), downloads the photoreal
 models if they are missing (3.7 GB), renders, and writes into the out folder:
@@ -83,6 +86,7 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=photoreal.RenderOptions.steps)
     parser.add_argument("--adherence", type=float, default=photoreal.RenderOptions.adherence)
     parser.add_argument("--no-highres", action="store_true")
+    parser.add_argument("--preview-only", action="store_true")
     args = parser.parse_args()
 
     scene = json.loads(args.scene.read_text(encoding="utf-8"))
@@ -93,6 +97,16 @@ def main() -> None:
     session_id = store.create(args.image.read_bytes())
     meta = preprocess(store, session_id, args.image.name, PreprocessOptions(), Console())
     print(f"session {session_id}: original {meta.original_size}, working {meta.working_size}")
+
+    if args.preview_only:
+        folder = store.folder(session_id)
+        assert folder is not None
+        _photo, shading = photoreal.make_hint(folder, meta.normals_method, meta.working_size,
+                                              lights, settings)
+        args.out.mkdir(parents=True, exist_ok=True)
+        shading.save(args.out / "shading.png")
+        print("written to", (args.out / "shading.png").resolve())
+        return
 
     options = photoreal.RenderOptions(steps=args.steps, adherence=args.adherence,
                                       long_edge=args.long_edge, highres=not args.no_highres)
