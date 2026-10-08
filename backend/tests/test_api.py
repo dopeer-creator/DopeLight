@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -12,6 +13,7 @@ from PIL import Image
 from relight_backend.main import create_app
 from relight_backend.pipeline import preprocess as preprocess_module
 from relight_backend.pipeline.sessions import MAP_NAMES, SessionMeta, SessionStore, map_file
+from relight_backend.utils.image_io import save_gray16
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -86,6 +88,20 @@ def test_session_flow_then_cache_hit(client: TestClient) -> None:
     again = upload(client, png_bytes(), normals="depth").json()
     assert again["cached"] is True and again["job_id"] is None
     assert again["session_id"] == first["session_id"]
+
+
+def test_depth_raw_serves_16_bit_values(client: TestClient, tmp_path: Path) -> None:
+    first = upload(client, png_bytes(), normals="depth").json()
+    events(client, first["job_id"])
+    depth = np.linspace(0, 1, 48, dtype=np.float32).reshape(6, 8)
+    save_gray16(depth, tmp_path / "sessions" / first["session_id"] / "depth.png")
+
+    response = client.get(f"/session/{first['session_id']}/depth_raw", headers=AUTH)
+    assert response.status_code == 200
+    values = np.frombuffer(response.content, dtype="<u2").reshape(6, 8)
+    assert values[0, 0] == 0 and values[-1, -1] == 65535
+    assert np.abs(values / 65535.0 - depth).max() < 1e-4
+    assert client.get("/session/0123456789abcdef0123/depth_raw", headers=AUTH).status_code == 404
 
 
 def test_other_normals_method_is_not_a_cache_hit(client: TestClient) -> None:

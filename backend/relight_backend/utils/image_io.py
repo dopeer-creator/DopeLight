@@ -64,6 +64,14 @@ def load_gray16(path: Path) -> FloatArray:
     return np.asarray(data, dtype=np.float32) / 65535.0
 
 
+def load_gray16_bytes(path: Path) -> bytes:
+    """The 16-bit values as raw little-endian uint16, row by row."""
+    data = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    if data is None or data.dtype != np.uint16:
+        raise OSError(f"Could not read 16-bit image {path}")
+    return data.astype("<u2").tobytes()
+
+
 def save_normals(normals: FloatArray, path: Path) -> None:
     data = np.clip((normals * 0.5 + 0.5) * 255.0 + 0.5, 0, 255).astype(np.uint8)
     Image.fromarray(data, mode="RGB").save(path)

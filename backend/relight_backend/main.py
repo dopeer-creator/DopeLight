@@ -25,7 +25,7 @@ from typing import Any
 import uvicorn
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
@@ -193,6 +193,20 @@ def create_app(token: str, data_root: Path | None = None) -> FastAPI:
         if meta is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "No such session, or not finished yet")
         return asdict(meta)
+
+    @app.get("/session/{session_id}/depth_raw", dependencies=protected)
+    def session_depth_raw(session_id: str) -> Response:
+        """Depth as raw little-endian uint16, row by row, at the session's working size.
+
+        The live preview uses this instead of depth.png: browsers decode 16-bit
+        PNGs to 8 bits, which would band the heightfield and its shadows.
+        """
+        path = store.map_path(session_id, "depth")
+        if path is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such map")
+        from relight_backend.utils.image_io import load_gray16_bytes
+
+        return Response(load_gray16_bytes(path), media_type="application/octet-stream")
 
     @app.get("/session/{session_id}/{map_name}", dependencies=protected)
     def session_map(session_id: str, map_name: str) -> FileResponse:

@@ -1,0 +1,327 @@
+"""Reference implementation of the live-preview shading.
+
+This must compute the same picture as the WebGL shader in
+app/src/renderer/src/gl/shader.ts. The shared numbers live in SHADING in
+app/src/shared/lighting.ts; tests/test_shading.py checks the two files agree,
+and scripts/parity.py compares the rendered pixels.
+
+Space: x = u (0 at the left edge, 1 at the right), y = (1 - v) * aspect (up),
+z = DEPTH_SCALE * depth (toward the viewer). Everything is in image-width
+units. All colour math is in linear light.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import Any
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+
+from relight_backend.constants import DEPTH_SCALE
+from relight_backend.utils.image_io import FloatArray
+
+MAX_LIGHTS = 8
+WRAP_K = 1.0  # diffusion 1 gives half-Lambert wrap
+SPEC_FADE = 0.1  # specular fades out as the surface turns away from the light
+SHADOW_BIAS = 0.006
+SHADOW_SOFT_MIN = 0.012  # penumbra width (height units) at diffusion 0
+SHADOW_SOFT_MAX = 0.08  # ... and at diffusion 1
+SHADOW_REACH = 1.0  # how far a directional light's shadow ray travels
+SHADOW_THICKNESS = 0.15  # shell thickness of shapes, for lights behind the surface
+EMBED_FADE = 0.03  # how gradually a light counts as "behind" as it sinks under the surface
+SHELL_DILATE = 0.004  # radius of the "top nearby" filter, as a fraction of the map width
+SOFT_CLIP_START = 0.8  # values above this are rolled off toward 1
+TARGET_HEIGHT = 0.5  # spot/directional lights aim at this fraction of DEPTH_SCALE
+DEFAULT_SHADOW_STEPS = 24
+
+Tensor = torch.Tensor
+
+
+@dataclass(frozen=True)
+class Light:
+    type: str = "point"  # "point" | "directional" | "spot"
+    x: float = 0.5  # normalized image coords, y down
+    y: float = 0.5
+    z: float = 0.7  # height above the image plane (z = 0), image-width units
+    target_x: float = 0.5  # where directional/spot lights aim
+    target_y: float = 0.5
+    color: tuple[float, float, float] = (1.0, 1.0, 1.0)  # linear RGB
+    intensity: float = 1.5
+    diffusion: float = 0.3
+    radius: float = 0.8
+    specular: float = 0.2
+    shininess: float = 32.0
+    cone_angle: float = 50.0  # full angle, degrees
+    cone_softness: float = 0.5
+    cast_shadows: bool = False
+    shadow_strength: float = 0.7
+    enabled: bool = True
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> Light:
+        """Build from the app's JSON (camelCase, nested position/target)."""
+        position, target = data["position"], data.get("target", {"x": 0.5, "y": 0.5})
+        return cls(
+            type=data["type"],
+            x=float(position["x"]),
+            y=float(position["y"]),
+            z=float(position["z"]),
+            target_x=float(target["x"]),
+            target_y=float(target["y"]),
+            color=(float(data["color"][0]), float(data["color"][1]), float(data["color"][2])),
+            intensity=float(data["intensity"]),
+            diffusion=float(data["diffusion"]),
+            radius=float(data["radius"]),
+            specular=float(data["specular"]),
+            shininess=float(data["shininess"]),
+            cone_angle=float(data["coneAngle"]),
+            cone_softness=float(data["coneSoftness"]),
+            cast_shadows=bool(data["castShadows"]),
+            shadow_strength=float(data["shadowStrength"]),
+            enabled=bool(data.get("enabled", True)),
+        )
+
+
+@dataclass(frozen=True)
+class GlobalSettings:
+    ambient: float = 0.0  # 0..2, flat fill light
+    exposure: float = 0.0  # stops
+    keep_original_light: float = 1.0  # 0..1
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> GlobalSettings:
+        return cls(
+            ambient=float(data["ambient"]),
+            exposure=float(data["exposure"]),
+            keep_original_light=float(data["keepOriginalLight"]),
+        )
+
+
+@dataclass
+class Shaded:
+    """Linear-light results, already exposed and soft-clipped. Shape (H, W, 3)."""
+
+    relit: Tensor
+    light_layer: Tensor  # sum of all light contributions, without the base image
+    per_light: list[Tensor] = field(default_factory=list)
+
+
+def srgb_to_linear(value: Tensor) -> Tensor:
+    return torch.where(value <= 0.04045, value / 12.92, ((value + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(value: Tensor) -> Tensor:
+    value = value.clamp(0.0, 1.0)
+    return torch.where(value <= 0.0031308, value * 12.92, 1.055 * value ** (1.0 / 2.4) - 0.055)
+
+
+def soft_clip(value: Tensor) -> Tensor:
+    """Identity up to SOFT_CLIP_START, then a smooth roll-off that never passes 1."""
+    span = 1.0 - SOFT_CLIP_START
+    rolled = SOFT_CLIP_START + span * torch.tanh((value - SOFT_CLIP_START) / span)
+    return torch.where(value <= SOFT_CLIP_START, value, rolled)
+
+
+def _smoothstep(edge0: float, edge1: float, value: Tensor) -> Tensor:
+    t = ((value - edge0) / (edge1 - edge0)).clamp(0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _fract(value: Tensor) -> Tensor:
+    return value - torch.floor(value)
+
+
+def pixel_noise(height: int, width: int, device: torch.device) -> Tensor:
+    """Interleaved gradient noise in [0, 1), indexed like gl_FragCoord (origin bottom-left)."""
+    frag_x = torch.arange(width, device=device, dtype=torch.float32) + 0.5
+    frag_y = (height - 1 - torch.arange(height, device=device, dtype=torch.float32)) + 0.5
+    dotted = frag_x[None, :] * 0.06711056 + frag_y[:, None] * 0.00583715
+    return _fract(52.9829189 * _fract(dotted))
+
+
+def light_position(light: Light, aspect: float) -> tuple[float, float, float]:
+    return (light.x, (1.0 - light.y) * aspect, light.z)
+
+
+def light_direction(light: Light, aspect: float) -> tuple[float, float, float]:
+    """Unit vector the light travels along: from its position toward its target."""
+    px, py, pz = light_position(light, aspect)
+    dx = light.target_x - px
+    dy = (1.0 - light.target_y) * aspect - py
+    dz = DEPTH_SCALE * TARGET_HEIGHT - pz
+    length = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
+    return (dx / length, dy / length, dz / length)
+
+
+def cone_cosines(light: Light) -> tuple[float, float]:
+    """(cos of the outer edge, cos of the inner edge) of a spot light's cone."""
+    half = math.radians(light.cone_angle) / 2.0
+    softness = min(max(light.cone_softness, 0.01), 1.0)
+    return (math.cos(half), math.cos(half * (1.0 - softness)))
+
+
+def light_embed(light: Light, depth: Tensor, aspect: float) -> float:
+    """How far a light is below the photo's surface at its own spot (> 0 = behind it).
+
+    A directional light has no spot: +-1000 by whether it shines from behind.
+    Same rule as lightEmbed() in the app's gl/renderer.ts.
+    """
+    if light.type == "directional":
+        return 1000.0 if light_direction(light, aspect)[2] > 0 else -1000.0
+    height, width = depth.shape
+    column = min(width - 1, max(0, math.floor(light.x * width)))
+    row = min(height - 1, max(0, math.floor(light.y * height)))
+    return DEPTH_SCALE * float(depth[row, column]) - light.z
+
+
+def dilate_radius(width: int) -> int:
+    """Radius, in pixels, of the "top nearby" filter. Same as dilateRadius() in the app."""
+    return max(1, math.floor(width * SHELL_DILATE + 0.5))
+
+
+def dilate_depth(depth: Tensor) -> Tensor:
+    """Highest depth within dilate_radius pixels of each pixel."""
+    radius = dilate_radius(depth.shape[1])
+    return F.max_pool2d(depth[None, None], 2 * radius + 1, stride=1, padding=radius)[0, 0]
+
+
+def _occlusion(
+    position: Tensor, ray: Tensor, depth: Tensor, tops: Tensor, aspect: float, diffusion: float,
+    jitter: Tensor, steps: int, behind: float, thickness: float,
+) -> Tensor:
+    """How blocked each pixel is, 0..1: march toward the light over the depth heightfield.
+
+    A light in front of the surface sees the photo's shapes as solids reaching all
+    the way back. A light behind the surface must itself be in open space, so for
+    it (behind = 1) shapes are shells of limited thickness and light can pass in
+    the gap behind them.
+    """
+    soft = SHADOW_SOFT_MIN + (SHADOW_SOFT_MAX - SHADOW_SOFT_MIN) * diffusion
+    occluded = torch.zeros_like(depth)
+    heights = torch.stack([depth, tops])[None]
+    for step in range(steps):
+        t = (step + 0.5 + jitter) / steps
+        sample = position + ray * t[..., None]
+        u = sample[..., 0]
+        v = 1.0 - sample[..., 1] / aspect
+        inside = (u >= 0.0) & (u <= 1.0) & (v >= 0.0) & (v <= 1.0)
+        grid = torch.stack([u * 2.0 - 1.0, v * 2.0 - 1.0], dim=-1)[None]
+        surface = F.grid_sample(
+            heights, grid, mode="bilinear", padding_mode="border", align_corners=False
+        )[0]
+        below = DEPTH_SCALE * surface[0] - sample[..., 2] - SHADOW_BIAS
+        # Thickness is counted from the shape's top nearby, not from the steep wall
+        # every outline has in a depth map; else a ray passing under a shape would
+        # always hit that wall.
+        below_top = DEPTH_SCALE * surface[1] - sample[..., 2] - SHADOW_BIAS
+        shell = 1.0 - ((below_top - thickness) / (0.25 * thickness + 1e-4)).clamp(0.0, 1.0)
+        blocked = (below / soft).clamp(0.0, 1.0) * (1.0 + (shell - 1.0) * behind)
+        occluded = torch.maximum(occluded, torch.where(inside, blocked, torch.zeros_like(blocked)))
+    return occluded
+
+
+def _contribution(
+    light: Light, albedo: Tensor, normal: Tensor, position: Tensor, depth: Tensor, tops: Tensor,
+    aspect: float, noise: Tensor, steps: int, jitter: float,
+) -> Tensor:
+    device = albedo.device
+    direction = torch.tensor(light_direction(light, aspect), device=device)
+
+    if light.type == "directional":
+        to_light = (-direction).expand_as(position)
+        attenuation = torch.ones_like(depth)
+        ray = to_light * SHADOW_REACH
+    else:
+        ray = torch.tensor(light_position(light, aspect), device=device) - position
+        distance = ray.norm(dim=-1)
+        to_light = ray / distance.clamp_min(1e-5)[..., None]
+        reach = distance / (light.radius * (1.0 + light.diffusion))
+        attenuation = 1.0 / (1.0 + reach * reach)
+
+    if light.type == "spot":
+        outer, inner = cone_cosines(light)
+        attenuation = attenuation * _smoothstep(outer, inner, (-to_light * direction).sum(dim=-1))
+
+    n_dot_l = (normal * to_light).sum(dim=-1)
+    wrap = light.diffusion * WRAP_K
+    diffuse = ((n_dot_l + wrap) / (1.0 + wrap)).clamp(0.0, 1.0)
+
+    view = torch.tensor([0.0, 0.0, 1.0], device=device)
+    half = F.normalize(to_light + view, dim=-1)
+    n_dot_h = (normal * half).sum(dim=-1).clamp_min(0.0)
+    specular = light.specular * n_dot_h**light.shininess * _smoothstep(0.0, SPEC_FADE, n_dot_l)
+
+    shadow = torch.ones_like(depth)
+    if light.cast_shadows and light.shadow_strength > 0.0:
+        embed = light_embed(light, depth, aspect)
+        behind = float(_smoothstep(0.0, EMBED_FADE, torch.tensor(embed)))
+        # Keep the shell above the light itself, or the light would be inside it.
+        thickness = min(SHADOW_THICKNESS, 0.7 * max(embed, 0.0))
+        occluded = _occlusion(
+            position, ray, depth, tops, aspect, light.diffusion, (noise - 0.5) * jitter, steps,
+            behind, thickness,
+        )
+        shadow = 1.0 - light.shadow_strength * occluded
+
+    color = torch.tensor(light.color, device=device) * light.intensity
+    falloff = (attenuation * shadow)[..., None]
+    return color * falloff * (albedo * diffuse[..., None] + specular[..., None])
+
+
+def shade(
+    albedo_srgb: FloatArray,
+    normals: FloatArray,
+    depth: FloatArray,
+    lights: list[Light],
+    settings: GlobalSettings,
+    *,
+    shadow_steps: int = DEFAULT_SHADOW_STEPS,
+    jitter: float = 1.0,
+    device: torch.device | None = None,
+) -> Shaded:
+    """Shade at the maps' own resolution. Inputs are float32 in the app's map conventions."""
+    device = device or torch.device("cpu")
+    albedo = srgb_to_linear(torch.from_numpy(np.ascontiguousarray(albedo_srgb)).to(device))
+    normal = F.normalize(torch.from_numpy(np.ascontiguousarray(normals)).to(device), dim=-1)
+    heights = torch.from_numpy(np.ascontiguousarray(depth)).to(device)
+
+    height, width = heights.shape
+    aspect = height / width
+    u = (torch.arange(width, device=device, dtype=torch.float32) + 0.5) / width
+    v = (torch.arange(height, device=device, dtype=torch.float32) + 0.5) / height
+    position = torch.stack(
+        [
+            u[None, :].expand(height, width),
+            ((1.0 - v) * aspect)[:, None].expand(height, width),
+            DEPTH_SCALE * heights,
+        ],
+        dim=-1,
+    )
+    noise = pixel_noise(height, width, device)
+    tops = dilate_depth(heights)
+
+    active = [light for light in lights if light.enabled][:MAX_LIGHTS]
+    per_light = [
+        _contribution(
+            light, albedo, normal, position, heights, tops, aspect, noise, shadow_steps, jitter
+        )
+        for light in active
+    ]
+    light_sum = torch.stack(per_light).sum(dim=0) if per_light else torch.zeros_like(albedo)
+
+    gain = 2.0**settings.exposure
+    base = albedo * (settings.keep_original_light + settings.ambient)
+    return Shaded(
+        relit=soft_clip((base + light_sum) * gain),
+        light_layer=soft_clip(light_sum * gain),
+        per_light=[soft_clip(layer * gain) for layer in per_light],
+    )
+
+
+def to_srgb8(linear: Tensor) -> np.ndarray[Any, np.dtype[np.uint8]]:
+    """Linear (H, W, 3) to 8-bit sRGB, rounded the way a framebuffer write rounds."""
+    encoded = (linear_to_srgb(linear) * 255.0 + 0.5).floor().clamp(0, 255)
+    return encoded.to(torch.uint8).cpu().numpy()
