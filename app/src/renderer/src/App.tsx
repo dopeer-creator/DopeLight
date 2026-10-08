@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ImagePlus } from 'lucide-react'
 import { APP_NAME } from '@shared/constants'
+import logoUrl from '../../../resources/logo.svg'
 import type { GlobalSettings, Light } from '@shared/lighting'
 import { CanvasView } from './components/CanvasView'
 import { ExportDialog } from './components/ExportDialog'
@@ -46,7 +47,10 @@ function StageMessage({ onOpen }: { onOpen: () => void }): React.JSX.Element | n
   }
   return (
     <div className="canvas-message">
-      <h1>{APP_NAME}</h1>
+      <img className="brand-mark" src={logoUrl} alt="" />
+      <h1 className="wordmark" aria-label={APP_NAME}>
+        dope <span>light</span>
+      </h1>
       {status === 'error' && <p className="canvas-message--error">Could not open the image: {error}</p>}
       <button className="button button--primary" disabled={!backendUp} onClick={onOpen}>
         <ImagePlus size={16} />
