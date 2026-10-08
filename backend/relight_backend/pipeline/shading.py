@@ -16,6 +16,7 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -30,7 +31,23 @@ SHADOW_BIAS = 0.006
 SHADOW_SOFT_MIN = 0.012  # penumbra width (height units) at diffusion 0
 SHADOW_SOFT_MAX = 0.08  # ... and at diffusion 1
 SHADOW_REACH = 1.0  # how far a directional light's shadow ray travels
-SHADOW_THICKNESS = 0.15  # shell thickness of shapes, for lights behind the surface
+SHADOW_THICKNESS = 0.15  # most a shape's shell counts as, for lights behind the surface
+# The march samples a blurred copy of the height map (a mip level), as wide as the
+# step it takes: no shape can fall between two samples, so shadow edges come out
+# clean instead of dotted. Steps are short near the lit point and long far away,
+# so a shadow is crisp where it touches and soft at a distance.
+SHADOW_LOD_SCALE = 2.0  # blur width, in multiples of the step length
+SHADOW_SPREAD = 0.35  # extra blur per unit of distance travelled, times the light's diffusion
+SHADOW_MAX_LOD = 10  # most mip levels kept (fewer when the map runs out first)
+# The subject is not a wall reaching back to the horizon: it is about as deep as
+# it is wide. Its thickness map says so (see thickness_code); 0 there means solid.
+THICKNESS_SCALE = 0.1  # the thickness whose code is 0.5
+THICKNESS_PER_WIDTH = 1.6  # thickness per unit of distance from the subject's outline
+THICKNESS_MIN = 0.03
+THICKNESS_MAX = 0.1
+THICKNESS_CODE_MIN = 0.25  # codes above this are subject (real ones are 0.5 and up)
+SUBJECT_GROW = 0.005  # the subject is widened by this much, as a fraction of the map width
+SUBJECT_MAX_SHARE = 0.9  # a "subject" covering more of the picture than this is no subject
 EMBED_FADE = 0.03  # how gradually a light counts as "behind" as it sinks under the surface
 SHELL_DILATE = 0.004  # radius of the "top nearby" filter, as a fraction of the map width
 RIM_STRENGTH = 1.5  # brightness of the outline glow from a light behind a shape
@@ -49,7 +66,7 @@ FLATTEN_MAX = 4.0  # never brighten by more than this
 ALBEDO_FLOOR = 0.02
 SOFT_CLIP_START = 0.8  # values above this are rolled off toward 1
 TARGET_HEIGHT = 0.5  # spot/directional lights aim at this fraction of DEPTH_SCALE
-DEFAULT_SHADOW_STEPS = 24
+DEFAULT_SHADOW_STEPS = 40
 
 Tensor = torch.Tensor
 
@@ -246,44 +263,150 @@ def outline_map(depth: Tensor) -> Tensor:
     return outline
 
 
+def thickness_code(mask: FloatArray) -> FloatArray:
+    """Where the subject is and how thick, as the 0..1 code the shading reads.
+
+    `mask` is the subject mask (1 = subject). A body part is taken to be about
+    as deep as it is wide: thickness grows with the distance from the outline,
+    between THICKNESS_MIN and THICKNESS_MAX (image-width units). The code is
+    THICKNESS_SCALE / (thickness + THICKNESS_SCALE), so always above 0.25 on the
+    subject; 0 stands for everything else, which is solid all the way back.
+
+    The subject is widened by a few pixels first: the outline in the depth map
+    and the outline of the mask never agree exactly, and a rim of subject-high
+    depth left on the background would cast a solid shadow of its own.
+    """
+    inside = (mask > 0.5).astype(np.uint8)
+    if float(inside.mean()) > SUBJECT_MAX_SHARE:
+        return np.zeros_like(mask, dtype=np.float32)
+    from_outline = cv2.distanceTransform(inside, cv2.DIST_L2, 5) / mask.shape[1]
+    thickness = np.clip(THICKNESS_PER_WIDTH * from_outline, THICKNESS_MIN, THICKNESS_MAX)
+    code = THICKNESS_SCALE / (thickness + THICKNESS_SCALE)
+    size = 2 * max(1, round(mask.shape[1] * SUBJECT_GROW)) + 1
+    grown = cv2.dilate(inside, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (size, size)))
+    return np.asarray(np.where(grown > 0, code, 0.0), dtype=np.float32)
+
+
+def march_levels(depth: Tensor, thickness: Tensor) -> list[Tensor]:
+    """What the shadow march reads, with mip levels: (4, H, W) each.
+
+    Channels: the depth of the background, the share that is subject, the depth
+    of the subject, the thickness of the subject; the first is weighted by the
+    share that is background and the last two by the share that is subject.
+    Averaging such weighted values keeps the two apart: half a blurred pixel
+    being subject does not turn into a wall half as high as the subject.
+    `thickness` is the code from thickness_code().
+
+    Each level averages 2 x 2 blocks of the one before and has half its size,
+    rounded down. Same as marchLevels() in the app's gl/renderer.ts.
+    """
+    subject = (thickness > THICKNESS_CODE_MIN).to(depth.dtype)
+    deep = THICKNESS_SCALE * (1.0 - thickness) / thickness.clamp_min(THICKNESS_CODE_MIN)
+    deep = deep.clamp(max=THICKNESS_MAX)
+    levels = [torch.stack([(1.0 - subject) * depth, subject, subject * depth, subject * deep])]
+    while min(levels[-1].shape[1:]) > 1 and len(levels) <= SHADOW_MAX_LOD:
+        last = levels[-1]
+        height, width = last.shape[1] // 2, last.shape[2] // 2
+        last = last[:, : height * 2, : width * 2]
+        levels.append(0.25 * (last[:, 0::2, 0::2] + last[:, 0::2, 1::2]
+                              + last[:, 1::2, 0::2] + last[:, 1::2, 1::2]))
+    return levels
+
+
+def _sample_levels(levels: list[Tensor], grid: Tensor, lod: Tensor) -> Tensor:
+    """Trilinear lookup: (4, h, w) values at `grid`, each pixel at its own level `lod`."""
+    lod = lod.clamp(0.0, len(levels) - 1.0)
+    lowest, highest = math.floor(float(lod.min())), math.ceil(float(lod.max()))
+    result = torch.zeros((levels[0].shape[0], *lod.shape), device=lod.device)
+    for level in range(lowest, highest + 1):
+        weight = (1.0 - (lod - level).abs()).clamp(0.0, 1.0)
+        values = F.grid_sample(
+            levels[level][None], grid, mode="bilinear", padding_mode="border", align_corners=False
+        )[0]
+        result = result + values * weight
+    return result
+
+
+def _exit(origin: Tensor, direction: Tensor, low: float, high: float) -> Tensor:
+    """How far along a ray (in ray lengths) a coordinate leaves the range [low, high]."""
+    far = torch.full_like(origin, 1e9)
+    up = torch.where(direction > 1e-9, (high - origin) / direction.clamp_min(1e-9), far)
+    down = torch.where(direction < -1e-9, (low - origin) / direction.clamp_max(-1e-9), far)
+    return torch.minimum(up, down)
+
+
 def _occlusion(
-    position: Tensor, ray: Tensor, depth: Tensor, tops: Tensor, aspect: float, diffusion: float,
-    jitter: Tensor, steps: int, behind: float, thickness: float,
+    position: Tensor, ray: Tensor, levels: list[Tensor], tops: Tensor, aspect: float,
+    diffusion: float, jitter: Tensor, steps: int, behind: float, shell_cap: float,
 ) -> Tensor:
     """How blocked each pixel is, 0..1: march toward the light over the depth heightfield.
 
-    A light in front of the surface sees the photo's shapes as solids reaching all
-    the way back. A light behind the surface must itself be in open space, so for
-    it (behind = 1) shapes are shells of limited thickness and light can pass in
-    the gap behind them.
+    The shapes of the background are solids reaching all the way back. The
+    subject is as thick as its thickness map says, and light passes behind it.
+    A light behind the surface must itself be in open space, so for it
+    (behind = 1) every shape is a shell of at most `shell_cap` and light can
+    pass in the gap behind.
+
+    The march covers only the part of the ray that is over the picture and below
+    the tallest possible shape, in steps that grow with distance; each sample
+    reads the maps blurred to the width of its step (see SHADOW_LOD_SCALE).
     """
     soft = SHADOW_SOFT_MIN + (SHADOW_SOFT_MAX - SHADOW_SOFT_MIN) * diffusion
-    occluded = torch.zeros_like(position[..., 0])  # the pixels being shaded (may be a strip)
-    heights = torch.stack([depth, tops])[None]  # the whole map, for lookups along the ray
+    width = levels[0].shape[2]
+    x, y, z = position[..., 0], position[..., 1], position[..., 2]
+    end = torch.minimum(_exit(x, ray[..., 0], 0.0, 1.0), _exit(y, ray[..., 1], 0.0, aspect))
+    end = torch.minimum(end, _exit(z, ray[..., 2], -1.0, DEPTH_SCALE + SHADOW_BIAS)).clamp(0.0, 1.0)
+    across = torch.sqrt(ray[..., 0] ** 2 + ray[..., 1] ** 2) * end * width  # pixels, over the map
+    length = ray.norm(dim=-1) * end
+    rise = ray[..., 2].abs() * end
+
+    occluded = torch.zeros_like(x)  # the pixels being shaded (may be a strip)
     for step in range(steps):
-        t = (step + 0.5 + jitter) / steps
+        s = (step + 0.5 + jitter) / steps
+        t = end * s * s
         sample = position + ray * t[..., None]
-        u = sample[..., 0]
-        v = 1.0 - sample[..., 1] / aspect
-        inside = (u >= 0.0) & (u <= 1.0) & (v >= 0.0) & (v <= 1.0)
+        u = sample[..., 0].clamp(0.0, 1.0)
+        v = (1.0 - sample[..., 1] / aspect).clamp(0.0, 1.0)
+        footprint = torch.maximum(
+            SHADOW_LOD_SCALE * across * (2.0 * s / steps),
+            SHADOW_SPREAD * diffusion * length * (s * s) * width,
+        )
         grid = torch.stack([u * 2.0 - 1.0, v * 2.0 - 1.0], dim=-1)[None]
-        surface = F.grid_sample(
-            heights, grid, mode="bilinear", padding_mode="border", align_corners=False
-        )[0]
-        below = DEPTH_SCALE * surface[0] - sample[..., 2] - SHADOW_BIAS
-        # Thickness is counted from the shape's top nearby, not from the steep wall
-        # every outline has in a depth map; else a ray passing under a shape would
-        # always hit that wall.
-        below_top = DEPTH_SCALE * surface[1] - sample[..., 2] - SHADOW_BIAS
-        shell = 1.0 - ((below_top - thickness) / (0.25 * thickness + 1e-4)).clamp(0.0, 1.0)
-        blocked = (below / soft).clamp(0.0, 1.0) * (1.0 + (shell - 1.0) * behind)
-        occluded = torch.maximum(occluded, torch.where(inside, blocked, torch.zeros_like(blocked)))
+        ground, share, front, deep = _sample_levels(
+            levels, grid, torch.log2(footprint.clamp_min(1.0))
+        )
+        half_rise = rise * s / steps  # half the height the ray gains over this step
+        height = sample[..., 2] + SHADOW_BIAS
+        edge = soft + half_rise
+
+        # The background: solid, or a shell when the light is behind the surface.
+        below = DEPTH_SCALE * ground / (1.0 - share).clamp_min(1e-4) - height
+        blocked = (below / edge).clamp(0.0, 1.0)
+        if behind > 0.0:
+            # Thickness is counted from the top of the shape nearby, not from the
+            # steep wall every outline has in a depth map; else a ray passing
+            # under a shape would always hit that wall.
+            top = F.grid_sample(tops[None, None], grid, mode="bilinear", padding_mode="border",
+                                align_corners=False)[0, 0]
+            under = DEPTH_SCALE * top - height - shell_cap - half_rise
+            shell = 1.0 - (under / (0.25 * shell_cap + half_rise + 1e-4)).clamp(0.0, 1.0)
+            blocked = blocked * (1.0 + (shell - 1.0) * behind)
+
+        # The subject: a slab from its front surface to its thickness behind that.
+        inside = DEPTH_SCALE * front / share.clamp_min(1e-4) - height
+        thickness = deep / share.clamp_min(1e-4)
+        thickness = thickness + (thickness.clamp(max=shell_cap) - thickness) * behind
+        slab = 1.0 - ((inside - thickness - half_rise)
+                      / (0.25 * thickness + half_rise + 1e-4)).clamp(0.0, 1.0)
+        blocked = (1.0 - share) * blocked + share * (inside / edge).clamp(0.0, 1.0) * slab
+        occluded = torch.maximum(occluded, blocked)
     return occluded
 
 
 def _contribution(
-    light: Light, albedo: Tensor, normal: Tensor, position: Tensor, depth: Tensor, tops: Tensor,
-    outline: Tensor, aspect: float, noise: Tensor, steps: int, jitter: float,
+    light: Light, albedo: Tensor, normal: Tensor, position: Tensor, depth: Tensor,
+    levels: list[Tensor], tops: Tensor, outline: Tensor, aspect: float, noise: Tensor,
+    steps: int, jitter: float,
 ) -> Tensor:
     device = albedo.device
     direction = torch.tensor(light_direction(light, aspect), device=device)
@@ -317,10 +440,10 @@ def _contribution(
         embed = light_embed(light, depth, aspect)
         behind = float(_smoothstep(0.0, EMBED_FADE, torch.tensor(embed)))
         # Keep the shell above the light itself, or the light would be inside it.
-        thickness = min(SHADOW_THICKNESS, 0.7 * max(embed, 0.0))
+        shell_cap = min(SHADOW_THICKNESS, 0.7 * max(embed, 0.0))
         occluded = _occlusion(
-            position, ray, depth, tops, aspect, light.diffusion, (noise - 0.5) * jitter, steps,
-            behind, thickness,
+            position, ray, levels, tops, aspect, light.diffusion, (noise - 0.5) * jitter, steps,
+            behind, shell_cap,
         )
         shadow = 1.0 - light.shadow_strength * occluded
 
@@ -348,6 +471,7 @@ class Scene:
     normal_smooth: Tensor  # blurred normals, for the smoothing setting
     reach: Tensor  # 1 where lights reach, 0 for sky and the far distance
     brightness: Tensor  # large-scale linear brightness of the photo
+    levels: list[Tensor]  # what the shadow march reads (see march_levels)
 
 
 def prepare_scene(
@@ -355,12 +479,13 @@ def prepare_scene(
     device: torch.device | None = None,
     tops: FloatArray | None = None, outline: FloatArray | None = None,
     normal_smooth: FloatArray | None = None, reach: FloatArray | None = None,
-    brightness: FloatArray | None = None,
+    brightness: FloatArray | None = None, thickness: FloatArray | None = None,
 ) -> Scene:
     """Convert float32 maps (the app's map conventions) for shading.
 
     `tops` and `outline` are derived from the depth when not given. An export
     passes them in, made at the working size and scaled up like the depth itself.
+    `thickness` is the code from thickness_code(); without it everything is solid.
     """
     device = device or torch.device("cpu")
     heights = torch.from_numpy(np.ascontiguousarray(depth)).to(device)
@@ -372,6 +497,7 @@ def prepare_scene(
     # Without the helper maps: no smoothing, lights reach everywhere, no evening out.
     smooth = normal if normal_smooth is None else F.normalize(given(normal_smooth), dim=-1)
     even = torch.full_like(heights, FLATTEN_TARGET) if brightness is None else given(brightness)
+    solid = torch.zeros_like(heights) if thickness is None else given(thickness)
     return Scene(
         albedo=srgb_to_linear(given(albedo_srgb)),
         normal=normal,
@@ -381,6 +507,7 @@ def prepare_scene(
         heights=heights,
         tops=dilate_depth(heights) if tops is None else given(tops),
         outline=outline_map(heights) if outline is None else given(outline),
+        levels=march_levels(heights, solid),
     )
 
 
@@ -426,7 +553,7 @@ def shade_scene(
     active = [light for light in lights if light.enabled][:MAX_LIGHTS]
     per_light = [
         _contribution(
-            light, lit_albedo, normal, position, scene.heights, scene.tops,
+            light, lit_albedo, normal, position, scene.heights, scene.levels, scene.tops,
             scene.outline[start:end], aspect, noise, shadow_steps, jitter,
         ) * reach
         for light in active

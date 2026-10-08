@@ -72,7 +72,7 @@ PHOTOREAL_KINDS = ("relit", "light_layer", "multiply")
 MULTIPLY_ONE = 0.5  # in a multiply layer this stored value means "times 1" (no change)
 FORMATS = {"png": ".png", "jpeg": ".jpg", "tiff": ".tif"}
 BLENDS = ("normal", "linear")
-EXPORT_SHADOW_STEPS = 48  # the preview uses 24; an export can afford smoother shadows
+EXPORT_SHADOW_STEPS = 48  # the preview uses 40; an export can afford slightly crisper shadows
 STRIP_PIXELS = 1_000_000  # pixels shaded per strip
 
 
@@ -189,9 +189,12 @@ def export(
     smooth = normalize_vectors(_scale_up(
         load_normals(folder / map_file("normal_smooth", meta.normals_method)), width, height
     ))
-    working_reach, working_brightness = load_aux(folder / map_file("aux", meta.normals_method))
+    working_reach, working_brightness, working_thickness = load_aux(
+        folder / map_file("aux", meta.normals_method)
+    )
     reach = _scale_up(working_reach, width, height)
     brightness = _scale_up(working_brightness, width, height)
+    thickness = _scale_up(working_thickness, width, height)
 
     active = [light for light in lights if light.enabled]
     suffix = FORMATS[options.format]
@@ -231,7 +234,7 @@ def export(
 
     def render(device: torch.device) -> None:
         scene = prepare_scene(albedo, normals, depth, device, tops, outline, smooth, reach,
-                              brightness)
+                              brightness, thickness)
         strip = max(1, STRIP_PIXELS // width)
         for start in range(0, height, strip):
             reporter.check_cancel()

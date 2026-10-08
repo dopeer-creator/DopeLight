@@ -73,16 +73,23 @@ def load_gray8(path: Path) -> FloatArray:
     return np.asarray(Image.open(path).convert("L"), dtype=np.float32) / 255.0
 
 
-def save_aux(reach: FloatArray, brightness: FloatArray, path: Path) -> None:
-    """Pack the two helper maps: red = reach, green = sqrt(brightness), blue unused."""
-    packed = np.dstack([reach, np.sqrt(np.clip(brightness, 0.0, 1.0)), np.zeros_like(reach)])
+def save_aux(
+    reach: FloatArray, brightness: FloatArray, path: Path, thickness: FloatArray | None = None
+) -> None:
+    """Pack the helper maps: red = reach, green = sqrt(brightness), blue = thickness code.
+
+    The thickness code is what shading.thickness_code() gives; 0 (the default)
+    means solid all the way back.
+    """
+    code = np.zeros_like(reach) if thickness is None else thickness
+    packed = np.dstack([reach, np.sqrt(np.clip(brightness, 0.0, 1.0)), code])
     Image.fromarray(np.clip(packed * 255.0 + 0.5, 0, 255).astype(np.uint8), mode="RGB").save(path)
 
 
-def load_aux(path: Path) -> tuple[FloatArray, FloatArray]:
-    """(reach, brightness) from a file written by save_aux."""
+def load_aux(path: Path) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """(reach, brightness, thickness code) from a file written by save_aux."""
     data = np.asarray(Image.open(path).convert("RGB"), dtype=np.float32) / 255.0
-    return data[..., 0], data[..., 1] ** 2
+    return data[..., 0], data[..., 1] ** 2, np.ascontiguousarray(data[..., 2])
 
 
 def save_gray16(array: FloatArray, path: Path) -> None:

@@ -270,7 +270,7 @@ def make_hint(folder: Path, normals_method: str, size: tuple[int, int], lights: 
     """(the photo, the lighting hint) at the diffusion size."""
     photo = Image.open(folder / map_file("albedo_proxy", normals_method)).convert("RGB")
     photo = photo.resize(size, Image.Resampling.LANCZOS)
-    reach, brightness = load_aux(folder / map_file("aux", normals_method))
+    reach, brightness, thickness = load_aux(folder / map_file("aux", normals_method))
     scene = prepare_scene(
         np.asarray(photo, dtype=np.float32) / 255.0,
         normalize_vectors(_resize(load_normals(folder / map_file("normal", normals_method)), size)),
@@ -280,6 +280,7 @@ def make_hint(folder: Path, normals_method: str, size: tuple[int, int], lights: 
         ),
         reach=_resize(reach, size),
         brightness=_resize(brightness, size),
+        thickness=_resize(thickness, size),
     )
     shaded = shade_scene(scene, lights, settings)
     return photo, Image.fromarray(to_srgb8(shaded.relit), mode="RGB")
