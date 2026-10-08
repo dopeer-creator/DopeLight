@@ -57,6 +57,9 @@ def make_session(root: Path) -> tuple[SessionStore, str, np.ndarray]:
     save_normals(normals_from_depth(depth), folder / map_file("normal", "depth"))
     save_normals(normals_from_depth(depth), folder / map_file("normal_smooth", "depth"))
     save_aux(np.ones_like(depth), np.full_like(depth, 0.18), folder / map_file("aux", "depth"))
+    Image.fromarray(np.full(depth.shape, 255, dtype=np.uint8), mode="L").save(  # all subject
+        folder / map_file("mask", "depth")
+    )
     store.save_meta(SessionMeta(session_id, "photo.png", FULL, WORKING, "depth", "stub"))
     return store, session_id, original
 

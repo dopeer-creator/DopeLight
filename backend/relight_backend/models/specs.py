@@ -102,6 +102,45 @@ STABLENORMAL_TURBO = ModelSpec(
     ),
 )
 
+# The photoreal pass: IC-Light is a set of weight offsets on top of a Stable
+# Diffusion 1.5 model. Realistic Vision 5.1 is the base IC-Light's own demo uses.
+SD15_REALISTIC = ModelSpec(
+    key="sd15_realistic_vision",
+    title="Realistic Vision 5.1 (Stable Diffusion 1.5)",
+    license="CreativeML OpenRAIL-M",
+    commercial_use=True,
+    approx_size_mb=2040,
+    weights=HfWeights(
+        repo_id="stablediffusionapi/realistic-vision-v51",
+        revision="19e3643d7d963c156d01537188ec08f0b79a514a",
+        allow_patterns=(
+            "model_index.json",
+            "tokenizer/*",
+            "text_encoder/config.json",
+            "text_encoder/model.safetensors",
+            "unet/config.json",
+            "unet/diffusion_pytorch_model.safetensors",
+            "vae/config.json",
+            "vae/diffusion_pytorch_model.safetensors",
+        ),
+    ),
+)
+
+IC_LIGHT_FC = ModelSpec(
+    key="ic_light_fc",
+    title="IC-Light",
+    license="Apache-2.0",
+    commercial_use=True,
+    approx_size_mb=1640,
+    weights=HfWeights(
+        repo_id="lllyasviel/ic-light",
+        revision="9cad1878695f546a7fb9eaca14e2a89131ba5ffe",
+        allow_patterns=("iclight_sd15_fc.safetensors",),
+    ),
+)
+
+PHOTOREAL: tuple[ModelSpec, ...] = (SD15_REALISTIC, IC_LIGHT_FC)
+
 MASK = BIREFNET_LITE
 DEPTH = DEPTH_ANYTHING_V2_SMALL
 
@@ -113,7 +152,7 @@ NORMALS: dict[str, ModelSpec | None] = {
 }
 DEFAULT_NORMALS = "dsine"
 
-ALL: tuple[ModelSpec, ...] = (MASK, DEPTH, DSINE, STABLENORMAL_TURBO)
+ALL: tuple[ModelSpec, ...] = (MASK, DEPTH, DSINE, STABLENORMAL_TURBO, *PHOTOREAL)
 BY_KEY: dict[str, ModelSpec] = {spec.key: spec for spec in ALL}
 
 
