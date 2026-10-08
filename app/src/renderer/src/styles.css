@@ -700,3 +700,51 @@ p {
   width: 100%;
   accent-color: var(--accent);
 }
+
+/* --- photoreal render ----------------------------------------------------------- */
+
+.stage-render {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.button--toolbar {
+  height: 30px;
+  padding: 0 14px;
+}
+
+.segmented--toolbar {
+  height: 30px;
+}
+
+.segmented--toolbar button {
+  height: 24px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.dialog-text {
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.field input[type='text'],
+.field input[type='number'] {
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  user-select: text;
+}
+
+.field input[type='text'] {
+  grid-column: 2 / 4;
+}

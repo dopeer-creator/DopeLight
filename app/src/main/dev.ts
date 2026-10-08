@@ -47,10 +47,16 @@ function capture(window: BrowserWindow, target: string): void {
   // be an old frame. Ask for a fresh one first.
   window.webContents.setBackgroundThrottling(false)
   window.webContents.invalidate()
-  void window.webContents.capturePage().then((image) => {
-    writeFileSync(target, image.toPNG())
-    log('INFO', 'main', `screenshot saved to ${target}`)
-  })
+  // The first capture after a quiet spell can still be the old frame; it also
+  // kicks off a new one. Keep the second.
+  void window.webContents
+    .capturePage()
+    .then(() => new Promise((resolve) => setTimeout(resolve, 400)))
+    .then(() => window.webContents.capturePage())
+    .then((image) => {
+      writeFileSync(target, image.toPNG())
+      log('INFO', 'main', `screenshot saved to ${target}`)
+    })
 }
 
 export function registerDevHandlers(): void {
@@ -78,13 +84,19 @@ export function registerDevHandlers(): void {
   })
 }
 
-/** Run the RELIGHT_SCRIPT file in the page and save what it returns. */
-async function runScript(window: BrowserWindow, file: string): Promise<void> {
+/** Run the RELIGHT_SCRIPT file in the page and save what it returns (after an optional capture). */
+async function runScript(window: BrowserWindow, file: string, shot?: string): Promise<void> {
   let result: unknown
   try {
     result = await window.webContents.executeJavaScript(readFileSync(file, 'utf8'), true)
   } catch (error) {
     result = { error: error instanceof Error ? error.message : String(error) }
+  }
+  if (shot) {
+    // The script may take minutes (a render); capture what it left on screen.
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    capture(window, shot)
+    await new Promise((resolve) => setTimeout(resolve, 800))
   }
   const out = env('RELIGHT_SCRIPT_OUT')
   if (out) {
@@ -101,7 +113,10 @@ export function attachDevHelpers(window: BrowserWindow): void {
   // With an image to open, wait for the renderer to say the picture is drawn.
   if (env('RELIGHT_OPEN')) {
     ipcMain.on(IPC.devReady, () => {
-      if (script && existsSync(script)) void runScript(window, script)
+      if (script && existsSync(script)) {
+        void runScript(window, script, target)
+        return
+      }
       // 1.5 s: long enough for the frame-time readout in the status bar to appear.
       if (target) setTimeout(() => capture(window, target), 1500)
     })

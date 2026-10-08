@@ -52,7 +52,7 @@ export interface JobEvent {
   download_done_mb?: number
   download_total_mb?: number
   /** On `done`: what the job returned (an export lists the files it wrote). */
-  result?: { files?: string[] }
+  result?: { files?: string[]; render_id?: string; note?: string; seconds?: number }
 }
 
 /** Development helpers (see app/src/main/dev.ts). */

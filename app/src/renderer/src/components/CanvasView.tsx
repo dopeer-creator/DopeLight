@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import { clamp, type Light, linearToHex, RANGES } from '@shared/lighting'
 import { RelightRenderer, surfaceHeightAt } from '../gl/renderer'
 import { useLightsStore } from '../stores/lightsStore'
+import { useRenderStore } from '../stores/renderStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useViewStore } from '../stores/viewStore'
 
@@ -33,6 +34,9 @@ export function CanvasView(): React.JSX.Element {
   const selectedId = useLightsStore((store) => store.selectedId)
   const split = useViewStore((store) => store.split)
   const splitAt = useViewStore((store) => store.splitAt)
+  const comparing = useViewStore((store) => store.comparing)
+  const renderUrl = useRenderStore((store) => store.imageUrl)
+  const showingRender = useRenderStore((store) => store.showing)
 
   const containerRef = useRef<HTMLDivElement>(null)
   const overlayRef = useRef<HTMLDivElement>(null)
@@ -245,13 +249,18 @@ export function CanvasView(): React.JSX.Element {
         style={{ width: size.width, height: size.height, visibility: maps ? 'visible' : 'hidden' }}
       >
         <canvas ref={canvasRef} className="stage-canvas" />
+        {/* The photoreal render lies over the live preview; holding Compare hides it. */}
+        {renderUrl !== null && showingRender && !comparing && (
+          <img className="stage-render" src={renderUrl} alt="Photoreal render" draggable={false} />
+        )}
         <div
           className="stage-overlay"
           ref={overlayRef}
           onWheel={onWheel}
           onPointerDown={() => store().select(null)}
         >
-          {split && (
+          {/* Split view compares original and live preview; the render covers both. */}
+          {split && !(showingRender && renderUrl !== null) && (
             <div className="split-line" style={{ left: percent(splitAt) }} onPointerDown={dragSplit}>
               <span className="split-grip" />
             </div>

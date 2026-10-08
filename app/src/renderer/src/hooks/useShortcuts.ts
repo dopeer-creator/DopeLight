@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useExportStore } from '../stores/exportStore'
 import { useLightsStore } from '../stores/lightsStore'
+import { useRenderStore } from '../stores/renderStore'
 import { useSessionStore } from '../stores/sessionStore'
 import { useViewStore } from '../stores/viewStore'
 
@@ -33,6 +34,9 @@ export function useShortcuts(onOpen: () => void): void {
         } else if (key === 'e') {
           event.preventDefault()
           useExportStore.getState().show()
+        } else if (key === 'enter') {
+          event.preventDefault()
+          useRenderStore.getState().show()
         } else if (key === 'z' && !event.shiftKey) {
           event.preventDefault()
           lights.undo()
@@ -42,9 +46,12 @@ export function useShortcuts(onOpen: () => void): void {
         }
         return
       }
-      if (key === 'escape') useExportStore.getState().hide()
-      // While the export dialog is open, the picture's shortcuts are off.
-      if (useExportStore.getState().open) return
+      if (key === 'escape') {
+        useExportStore.getState().hide()
+        useRenderStore.getState().hide()
+      }
+      // While a dialog is open, the picture's shortcuts are off.
+      if (useExportStore.getState().open || useRenderStore.getState().open) return
       if (inControl(event.target) || useSessionStore.getState().status !== 'ready') return
 
       if (key === 'c') {

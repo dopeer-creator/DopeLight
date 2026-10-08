@@ -1,13 +1,17 @@
 import { create } from 'zustand'
 import { backendFetch, jobEvents } from '../api'
 import { useLightsStore } from './lightsStore'
+import { useRenderStore } from './renderStore'
 import { useSessionStore } from './sessionStore'
 
-export type ExportKind = 'relit' | 'light_layer' | 'per_light'
+export type ExportKind = 'relit' | 'light_layer' | 'per_light' | 'multiply'
+/** Export what the live preview shows, or the last photoreal render. */
+export type ExportSource = 'preview' | 'photoreal'
 export type ExportFormat = 'png' | 'jpeg' | 'tiff'
 export type BlendTarget = 'normal' | 'linear'
 
 export interface ExportOptions {
+  source: ExportSource
   kind: ExportKind
   format: ExportFormat
   bitDepth: 8 | 16
@@ -17,7 +21,18 @@ export interface ExportOptions {
 }
 
 const EXTENSION: Record<ExportFormat, string> = { png: 'png', jpeg: 'jpg', tiff: 'tif' }
-const SUFFIX: Record<ExportKind, string> = { relit: '_relit', light_layer: '_light', per_light: '_lights' }
+const SUFFIX: Record<ExportKind, string> = {
+  relit: '_relit',
+  light_layer: '_light',
+  per_light: '_lights',
+  multiply: '_multiply'
+}
+
+/** Kinds each source can produce. */
+export const KINDS_FOR: Record<ExportSource, ExportKind[]> = {
+  preview: ['relit', 'light_layer', 'per_light'],
+  photoreal: ['relit', 'light_layer', 'multiply']
+}
 
 interface ExportStore {
   open: boolean
@@ -45,7 +60,15 @@ function stem(name: string): string {
 
 export const useExportStore = create<ExportStore>((set, get) => ({
   open: false,
-  options: { kind: 'relit', format: 'png', bitDepth: 8, quality: 92, blend: 'normal', alpha: false },
+  options: {
+    source: 'preview',
+    kind: 'relit',
+    format: 'png',
+    bitDepth: 8,
+    quality: 92,
+    blend: 'normal',
+    alpha: false
+  },
   running: false,
   progress: 0,
   message: '',
@@ -53,12 +76,22 @@ export const useExportStore = create<ExportStore>((set, get) => ({
   error: null,
 
   show: () => {
-    if (useSessionStore.getState().status === 'ready') set({ open: true, error: null, files: [] })
+    if (useSessionStore.getState().status !== 'ready') return
+    // Start from what the picture is showing right now.
+    const source: ExportSource = useRenderStore.getState().showing ? 'photoreal' : 'preview'
+    set({ open: true, error: null, files: [] })
+    get().setOptions({ source })
   },
   hide: () => {
     if (!get().running) set({ open: false })
   },
-  setOptions: (patch) => set((state) => ({ options: { ...state.options, ...patch } })),
+  setOptions: (patch) =>
+    set((state) => {
+      const options = { ...state.options, ...patch }
+      // A kind the chosen source cannot make falls back to the relit image.
+      if (!KINDS_FOR[options.source].includes(options.kind)) options.kind = 'relit'
+      return { options }
+    }),
 
   run: async () => {
     const { options, running } = get()
@@ -66,7 +99,9 @@ export const useExportStore = create<ExportStore>((set, get) => ({
     if (running || sessionId === null) return
 
     // The original keeps its name; the export gets a suffix.
-    const defaultName = `${stem(sourceName ?? 'image')}${SUFFIX[options.kind]}.${EXTENSION[options.format]}`
+    const renderId = options.source === 'photoreal' ? useRenderStore.getState().renderId : null
+    const tag = renderId !== null ? '_photoreal' : ''
+    const defaultName = `${stem(sourceName ?? 'image')}${tag}${SUFFIX[options.kind]}.${EXTENSION[options.format]}`
     const target = await window.relight.chooseExportPath(defaultName, EXTENSION[options.format])
     if (target === null) return
 
@@ -85,6 +120,7 @@ export const useExportStore = create<ExportStore>((set, get) => ({
           quality: options.quality,
           blend: options.blend,
           alpha: options.alpha,
+          render_id: renderId,
           target
         })
       })

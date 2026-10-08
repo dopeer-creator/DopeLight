@@ -4,6 +4,7 @@ import { App } from './App'
 import { runParity } from './parity'
 import { useExportStore } from './stores/exportStore'
 import { useLightsStore } from './stores/lightsStore'
+import { useRenderStore } from './stores/renderStore'
 import { useSessionStore } from './stores/sessionStore'
 import { useViewStore } from './stores/viewStore'
 import './styles.css'
@@ -15,7 +16,8 @@ if (import.meta.env.DEV) {
       lights: useLightsStore,
       view: useViewStore,
       session: useSessionStore,
-      exports: useExportStore
+      exports: useExportStore,
+      render: useRenderStore
     }
   })
 }

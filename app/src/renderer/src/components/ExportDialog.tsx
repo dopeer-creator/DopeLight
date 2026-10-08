@@ -4,8 +4,11 @@ import {
   type BlendTarget,
   type ExportFormat,
   type ExportKind,
+  type ExportSource,
+  KINDS_FOR,
   useExportStore
 } from '../stores/exportStore'
+import { useRenderStore } from '../stores/renderStore'
 import { useLightsStore } from '../stores/lightsStore'
 
 const KINDS: { value: ExportKind; label: string; hint: string }[] = [
@@ -19,6 +22,11 @@ const KINDS: { value: ExportKind; label: string; hint: string }[] = [
     value: 'per_light',
     label: 'One layer per light',
     hint: 'A separate light layer for each light, so you can balance them later. Together they add up to the light layer.'
+  },
+  {
+    value: 'multiply',
+    label: 'Multiply layer',
+    hint: 'How much brighter or darker each spot became, for the Multiply blend mode in a 32-bit (linear) document. Mid grey means no change. Unlike a light layer it also carries the new shadows; brightening is limited to 2 times.'
   }
 ]
 
@@ -46,9 +54,13 @@ export function ExportDialog(): React.JSX.Element | null {
   const { open, options, running, progress, message, files, error } = useExportStore()
   const { hide, setOptions, run, cancel } = useExportStore.getState()
   const globals = useLightsStore((store) => store.globals)
+  const renderId = useRenderStore((store) => store.renderId)
+  const renderOutdated = useRenderStore((store) => store.outdated)
   if (!open) return null
 
-  const layers = options.kind !== 'relit'
+  const hasRender = renderId !== null
+  const photoreal = options.source === 'photoreal'
+  const layers = options.kind === 'light_layer' || options.kind === 'per_light'
   const sceneChanged =
     globals.ambient !== DEFAULT_GLOBALS.ambient ||
     globals.exposure !== DEFAULT_GLOBALS.exposure ||
@@ -65,8 +77,21 @@ export function ExportDialog(): React.JSX.Element | null {
         </header>
 
         <div className="dialog-body">
+          {hasRender && (
+            <label className="field" title="The live preview is exact and instant. The photoreal render is the AI-redrawn light; its light layer is an approximation, because it also changes shadows.">
+              <span>From</span>
+              <select
+                value={options.source}
+                disabled={running}
+                onChange={(event) => setOptions({ source: event.target.value as ExportSource })}
+              >
+                <option value="preview">Live preview</option>
+                <option value="photoreal">Photoreal render{renderOutdated ? ' (made before the lights changed)' : ''}</option>
+              </select>
+            </label>
+          )}
           <div className="choice-list" role="radiogroup" aria-label="What to export">
-            {KINDS.map((kind) => (
+            {KINDS.filter((kind) => KINDS_FOR[options.source].includes(kind.value)).map((kind) => (
               <label key={kind.value} className="choice" title={kind.hint}>
                 <input
                   type="radio"
@@ -144,7 +169,7 @@ export function ExportDialog(): React.JSX.Element | null {
                 />
                 Also save a transparent version
               </label>
-              {sceneChanged && (
+              {sceneChanged && !photoreal && (
                 <p className="dialog-note">
                   Original light, Ambient, or Exposure is changed, so the layers belong on top of that
                   adjusted picture, not the untouched photo. It is saved too, as “_base”.

@@ -1,4 +1,5 @@
-import { Columns2, Download, Eye, FolderOpen, Redo2, Undo2 } from 'lucide-react'
+import { Columns2, Download, Eye, FolderOpen, Redo2, Sparkles, Undo2 } from 'lucide-react'
+import { useRenderStore } from '../stores/renderStore'
 import { useExportStore } from '../stores/exportStore'
 import { useLightsStore } from '../stores/lightsStore'
 import { useSessionStore } from '../stores/sessionStore'
@@ -13,6 +14,10 @@ export function Toolbar({ onOpen }: { onOpen: () => void }): React.JSX.Element {
   const split = useViewStore((store) => store.split)
   const { undo, redo } = useLightsStore.getState()
   const { setComparing, toggleSplit } = useViewStore.getState()
+  const hasRender = useRenderStore((store) => store.imageUrl !== null)
+  const showingRender = useRenderStore((store) => store.showing)
+  const renderOutdated = useRenderStore((store) => store.outdated)
+  const rendering = useRenderStore((store) => store.running)
 
   return (
     <header className="toolbar">
@@ -52,6 +57,41 @@ export function Toolbar({ onOpen }: { onOpen: () => void }): React.JSX.Element {
         >
           <Columns2 size={15} />
           Split
+        </button>
+        {hasRender && (
+          <div className="segmented segmented--toolbar" role="radiogroup" aria-label="What the picture shows">
+            <button
+              role="radio"
+              aria-checked={!showingRender}
+              className={showingRender ? '' : 'segmented--on'}
+              title="The live preview: fast and rough, follows the lights instantly"
+              onClick={() => useRenderStore.getState().setShowing(false)}
+            >
+              Preview
+            </button>
+            <button
+              role="radio"
+              aria-checked={showingRender}
+              className={showingRender ? 'segmented--on' : ''}
+              title={
+                renderOutdated
+                  ? 'The last photoreal render. The lights changed since; render again to update it.'
+                  : 'The photoreal render'
+              }
+              onClick={() => useRenderStore.getState().setShowing(true)}
+            >
+              Photoreal{renderOutdated ? ' (old)' : ''}
+            </button>
+          </div>
+        )}
+        <button
+          className="button button--primary button--toolbar"
+          title="Photoreal render: redraw the light with the AI model (Ctrl+Enter)"
+          disabled={!ready}
+          onClick={useRenderStore.getState().show}
+        >
+          <Sparkles size={15} />
+          {rendering ? 'Rendering…' : 'Render'}
         </button>
         <button
           className="button"

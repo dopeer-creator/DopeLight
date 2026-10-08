@@ -5,6 +5,7 @@ import type { GlobalSettings, Light } from '@shared/lighting'
 import { CanvasView } from './components/CanvasView'
 import { ExportDialog } from './components/ExportDialog'
 import { LightsPanel } from './components/LightsPanel'
+import { RenderDialog } from './components/RenderDialog'
 import { StatusBar } from './components/StatusBar'
 import { Toolbar } from './components/Toolbar'
 import { benchmarkShader } from './gl/benchmark'
@@ -145,6 +146,7 @@ export function App(): React.JSX.Element {
       </div>
       <StatusBar />
       <ExportDialog />
+      <RenderDialog />
     </div>
   )
 }
