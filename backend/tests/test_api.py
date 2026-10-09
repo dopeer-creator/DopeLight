@@ -13,7 +13,7 @@ from PIL import Image
 from relight_backend.main import create_app
 from relight_backend.pipeline import preprocess as preprocess_module
 from relight_backend.pipeline.sessions import MAP_NAMES, SessionMeta, SessionStore, map_file
-from relight_backend.utils.image_io import save_gray16
+from relight_backend.utils.image_io import save_gray8, save_gray16
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -102,6 +102,23 @@ def test_depth_raw_serves_16_bit_values(client: TestClient, tmp_path: Path) -> N
     assert values[0, 0] == 0 and values[-1, -1] == 65535
     assert np.abs(values / 65535.0 - depth).max() < 1e-4
     assert client.get("/session/0123456789abcdef0123/depth_raw", headers=AUTH).status_code == 404
+
+
+def test_thickness_raw_serves_one_byte_per_pixel(client: TestClient, tmp_path: Path) -> None:
+    first = upload(client, png_bytes(), normals="depth").json()
+    events(client, first["job_id"])
+    folder = tmp_path / "sessions" / first["session_id"]
+    assert (folder / "thickness.png").exists()  # preprocess writes it
+    code = np.linspace(0, 1, 48, dtype=np.float32).reshape(6, 8)
+    save_gray8(code, folder / "thickness.png")
+
+    response = client.get(f"/session/{first['session_id']}/thickness_raw", headers=AUTH)
+    assert response.status_code == 200
+    values = np.frombuffer(response.content, dtype=np.uint8).reshape(6, 8)
+    assert values[0, 0] == 0 and values[-1, -1] == 255
+    assert np.abs(values / 255.0 - code).max() < 3e-3
+    missing = client.get("/session/0123456789abcdef0123/thickness_raw", headers=AUTH)
+    assert missing.status_code == 404
 
 
 def test_export_writes_files_and_reports_them(tmp_path: Path) -> None:

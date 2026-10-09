@@ -42,6 +42,8 @@ const float SHADOW_SOFT_MIN = ${f(SHADING.shadowSoftMin)};
 const float SHADOW_SOFT_MAX = ${f(SHADING.shadowSoftMax)};
 const float SHADOW_REACH = ${f(SHADING.shadowReach)};
 const float SHADOW_THICKNESS = ${f(SHADING.shadowThickness)};
+const float SHADOW_LOD_SCALE = ${f(SHADING.shadowLodScale)};
+const float SHADOW_SPREAD = ${f(SHADING.shadowSpread)};
 const float EMBED_FADE = ${f(SHADING.embedFade)};
 const float RIM_STRENGTH = ${f(SHADING.rimStrength)};
 const float RIM_WHITE = ${f(SHADING.rimWhite)};
@@ -62,6 +64,8 @@ uniform sampler2D uAux;    // r: 1 where lights reach, 0 for sky. g: sqrt of lar
                            // b, a: the rim map, a vector pointing out of the shape a pixel is on;
                            // its length is how far the shape's rounded edge has turned away
                            // there: 1 at the outline, 0 where the surface faces the viewer
+uniform sampler2D uMarch;  // what the shadow march reads, with mip levels (see marchLevels)
+uniform float uMapWidth;   // width of the maps, in pixels
 uniform float uAspect;     // image height / width
 
 uniform int uLightCount;
@@ -107,29 +111,70 @@ float pixelNoise(vec2 fragCoord) {
   return fract(52.9829189 * fract(dot(fragCoord, vec2(0.06711056, 0.00583715))));
 }
 
+// How far along a ray (in ray lengths) a coordinate leaves the range [low, high].
+float exitAt(float origin, float direction, float low, float high) {
+  if (direction > 1e-9) return (high - origin) / direction;
+  if (direction < -1e-9) return (low - origin) / direction;
+  return 1e9;
+}
+
 // How blocked this pixel is, 0..1: march toward the light over the depth heightfield.
 //
-// A light in front of the surface sees the photo's shapes as solids reaching all
-// the way back. A light behind the surface must itself be in open space, so for
-// it (behind = 1) shapes are shells of limited thickness and light can pass in
-// the gap behind them.
-float occlusion(vec3 position, vec3 ray, float diffusion, float jitter, float behind, float thickness) {
+// The shapes of the background are solids reaching all the way back. The subject
+// is as thick as its thickness map says, and light passes behind it. A light
+// behind the surface must itself be in open space, so for it (behind = 1) every
+// shape is a shell of at most shellCap and light can pass in the gap behind.
+//
+// The march covers only the part of the ray that is over the picture and below
+// the tallest possible shape, in steps that grow with distance; each sample reads
+// the maps blurred to the width of its step (a mip level of uMarch), so no shape
+// can fall between two samples and shadow edges come out clean, not dotted.
+float occlusion(vec3 position, vec3 ray, float diffusion, float jitter, float behind, float shellCap) {
   float soft = mix(SHADOW_SOFT_MIN, SHADOW_SOFT_MAX, diffusion);
+  float end = min(exitAt(position.x, ray.x, 0.0, 1.0), exitAt(position.y, ray.y, 0.0, uAspect));
+  end = clamp(min(end, exitAt(position.z, ray.z, -1.0, DEPTH_SCALE + SHADOW_BIAS)), 0.0, 1.0);
+  float across = length(ray.xy) * end * uMapWidth; // pixels, over the map
+  float travelled = length(ray) * end;
+  float rise = abs(ray.z) * end;
+  float steps = float(uShadowSteps);
+
   float occluded = 0.0;
   for (int i = 0; i < MAX_SHADOW_STEPS; i++) {
     if (i >= uShadowSteps) break;
-    float t = (float(i) + 0.5 + jitter) / float(uShadowSteps);
-    vec3 point = position + ray * t;
-    vec2 uv = vec2(point.x, 1.0 - point.y / uAspect);
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) continue;
-    vec2 surface = DEPTH_SCALE * textureLod(uDepth, uv, 0.0).rg;
-    float below = surface.r - point.z - SHADOW_BIAS; // how far under the surface the ray is here
-    // Thickness is counted from the shape's top nearby, not from the steep wall
-    // every outline has in a depth map; else a ray passing under a shape would
-    // always hit that wall.
-    float belowTop = surface.g - point.z - SHADOW_BIAS;
-    float shell = 1.0 - clamp((belowTop - thickness) / (0.25 * thickness + 1e-4), 0.0, 1.0);
-    occluded = max(occluded, clamp(below / soft, 0.0, 1.0) * mix(1.0, shell, behind));
+    float s = (float(i) + 0.5 + jitter) / steps;
+    vec3 point = position + ray * (end * s * s);
+    vec2 uv = clamp(vec2(point.x, 1.0 - point.y / uAspect), 0.0, 1.0);
+    float footprint = max(SHADOW_LOD_SCALE * across * (2.0 * s / steps),
+                          SHADOW_SPREAD * diffusion * travelled * (s * s) * uMapWidth);
+    // r: background depth, g: share that is subject, b: subject depth, a: subject thickness
+    vec4 march = textureLod(uMarch, uv, log2(max(footprint, 1.0)));
+    float share = march.g;
+    float halfRise = rise * s / steps; // half the height the ray gains over this step
+    float height = point.z + SHADOW_BIAS;
+
+    // The background: solid, or a shell when the light is behind the surface.
+    float below = DEPTH_SCALE * march.r / max(1.0 - share, 1e-4) - height;
+    float blocked = clamp(below / (soft + halfRise), 0.0, 1.0);
+    if (behind > 0.0) {
+      // Thickness is counted from the top of the shape nearby, not from the steep
+      // wall every outline has in a depth map; else a ray passing under a shape
+      // would always hit that wall.
+      float under = DEPTH_SCALE * textureLod(uDepth, uv, 0.0).g - height - shellCap - 3.0 * halfRise;
+      float shell = 1.0 - clamp(under / (0.25 * shellCap + halfRise + 1e-4), 0.0, 1.0);
+      blocked *= mix(1.0, shell, behind);
+    }
+
+    // The subject: a slab from its front surface to its thickness behind that.
+    float inside = DEPTH_SCALE * march.b / max(share, 1e-4) - height;
+    float thickness = march.a / max(share, 1e-4);
+    thickness = mix(thickness, min(thickness, shellCap), behind);
+    // The ray is tested once per step, a step apart in height too. For the answer
+    // not to depend on where in a thin slab a test happens to land (that shows as
+    // a mesh of dots), the slab is entered within half its own thickness and left
+    // three half steps late: one test at least always falls where both hold.
+    float entered = clamp(inside / (min(soft, 0.5 * thickness) + halfRise + 1e-4), 0.0, 1.0);
+    float slab = 1.0 - clamp((inside - thickness - 3.0 * halfRise) / (0.25 * thickness + halfRise + 1e-4), 0.0, 1.0);
+    occluded = max(occluded, (1.0 - share) * blocked + share * entered * slab);
   }
   return occluded;
 }
@@ -165,9 +210,9 @@ vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, vec2 rimVector
   if (uShadow[i] > 0.0) {
     float behind = smoothstep(0.0, EMBED_FADE, uEmbed[i]);
     // Keep the shell above the light itself, or the light would be inside it.
-    float thickness = min(SHADOW_THICKNESS, 0.7 * max(uEmbed[i], 0.0));
+    float shellCap = min(SHADOW_THICKNESS, 0.7 * max(uEmbed[i], 0.0));
     shadow = 1.0 - uShadow[i]
-      * occlusion(position, ray, uDiffusion[i], (noise - 0.5) * uJitter, behind, thickness);
+      * occlusion(position, ray, uDiffusion[i], (noise - 0.5) * uJitter, behind, shellCap);
   }
 
   // Rim light: the light a shape's rounded edge catches from a light beside or

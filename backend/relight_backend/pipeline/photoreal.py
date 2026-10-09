@@ -48,6 +48,7 @@ from relight_backend.utils.image_io import (
     FloatArray,
     load_aux,
     load_gray8,
+    load_gray8_or_zeros,
     load_gray16,
     load_image,
     load_normals,
@@ -304,6 +305,10 @@ def load_scene(folder: Path, normals_method: str, size: tuple[int, int],
         reach=_resize(reach, size),
         brightness=_resize(brightness, size),
         rim=_resize(rim, size),
+        # A session from before the thickness map has none: everything is solid then.
+        thickness=_resize(
+            load_gray8_or_zeros(folder / map_file("thickness", normals_method), reach), size
+        ),
     )
     return photo, scene
 

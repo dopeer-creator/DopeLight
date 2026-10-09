@@ -18,7 +18,8 @@ from typing import Any
 # v2 added the rim map, v3 rounds it by how thick the shape is, v4 leaves out strays and
 # uncertain parts of the mask; a session with only an older file gets a new one.
 AUX_FILE = "aux_v4.png"
-MAP_NAMES = ("albedo_proxy", "normal", "normal_smooth", "depth", "mask", "aux")
+# thickness: where the subject is and how thick (shading.thickness_code), 8-bit grey.
+MAP_NAMES = ("albedo_proxy", "normal", "normal_smooth", "depth", "mask", "aux", "thickness")
 ORIGINAL_FILE = "original.bin"
 META_FILE = "meta.json"
 

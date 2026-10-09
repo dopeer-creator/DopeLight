@@ -37,12 +37,15 @@ from relight_backend.pipeline.shading import (  # noqa: E402
     rim_field,
     shade_scene,
     srgb_to_linear,
+    thickness_code,
     to_srgb8,
 )
 from relight_backend.utils.image_io import (  # noqa: E402
     load_aux,
+    load_gray8,
     load_normals,
     save_aux,
+    save_gray8,
     save_normals,
 )
 
@@ -86,8 +89,14 @@ def build_maps() -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarr
     rim = rim_field((depth16 / 65535.0).astype(np.float32), box.astype(np.float32))
     save_aux(reach, large_scale_brightness(Image.open(OUT / "albedo.png")), OUT / "aux.png", rim)
     reach8, brightness, rim8 = load_aux(OUT / "aux.png")
+    # The box is also what the shadow march treats as the subject: a slab, not a solid.
+    save_gray8(thickness_code(box.astype(np.float32)), OUT / "thickness.png")
+    thickness = load_gray8(OUT / "thickness.png")
+    (OUT / "thickness.raw").write_bytes(
+        np.clip(thickness * 255.0 + 0.5, 0, 255).astype(np.uint8).tobytes()
+    )
     helpers = {"normal_smooth": load_normals(OUT / "normal_smooth.png"), "reach": reach8,
-               "brightness": brightness, "rim": rim8}
+               "brightness": brightness, "rim": rim8, "thickness": thickness}
     return albedo8, normals, depth16, helpers
 
 
@@ -107,7 +116,7 @@ def scene(name: str, lights: list[dict[str, Any]], **overrides: Any) -> dict[str
         "name": name, "lights": lights, "mode": "relit", "split": None,
         "globals": {"ambient": 0.0, "exposure": 0.0, "keepOriginalLight": 1.0,
                     "smoothing": 0.0, "flatten": 0.0},
-        "shadowSteps": 24, "jitter": 1.0,
+        "shadowSteps": 40, "jitter": 1.0,
     }
     return {**base, **overrides}
 
@@ -139,8 +148,12 @@ def build_scenes() -> list[dict[str, Any]]:
                              target={"x": 0.4, "y": 0.5})]),
         scene("shadow_no_jitter", [shadow], jitter=0.0),
         scene("shadow_jitter", [shadow]),
-        scene("shadow_soft_48_steps", [light(position=low, castShadows=True, diffusion=0.8)],
-              shadowSteps=48),
+        scene("shadow_soft_64_steps", [light(position=low, castShadows=True, diffusion=0.8)],
+              shadowSteps=64),
+        # The box is a slab: a light beside it, low, throws its shadow along the floor.
+        scene("shadow_of_the_subject", [light(position={"x": 0.98, "y": 0.5, "z": 0.5},
+                                              castShadows=True, shadowStrength=1.0,
+                                              diffusion=0.2, intensity=2.5)]),
         scene("shadow_directional", [light(type="directional", castShadows=True,
                                            position={"x": 0.0, "y": 0.5, "z": 0.6},
                                            target={"x": 0.7, "y": 0.5})]),

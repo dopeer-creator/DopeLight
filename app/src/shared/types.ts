@@ -73,6 +73,8 @@ export interface ParityFixture {
   aux: Uint8Array
   /** raw little-endian uint16 */
   depth: Uint8Array
+  /** raw bytes, one per pixel */
+  thickness: Uint8Array
 }
 
 /** What the preload script exposes on `window.relight`. */

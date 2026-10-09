@@ -71,7 +71,8 @@ export function registerDevHandlers(): void {
       normal: readFileSync(join(folder, 'normal.png')),
       normalSmooth: readFileSync(join(folder, 'normal_smooth.png')),
       aux: readFileSync(join(folder, 'aux.png')),
-      depth: readFileSync(join(folder, 'depth.raw'))
+      depth: readFileSync(join(folder, 'depth.raw')),
+      thickness: readFileSync(join(folder, 'thickness.raw'))
     }
   })
   ipcMain.handle(IPC.parityResult, (_event, name: string, pixels: Uint8Array) => {

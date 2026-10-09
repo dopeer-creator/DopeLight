@@ -56,6 +56,12 @@ export const SHADING = {
   shadowSoftMax: 0.08,
   shadowReach: 1.0,
   shadowThickness: 0.15,
+  shadowLodScale: 2.0,
+  shadowSpread: 0.35,
+  shadowMaxLod: 10,
+  thicknessScale: 0.1,
+  thicknessMax: 0.1,
+  thicknessCodeMin: 0.25,
   embedFade: 0.03,
   shellDilate: 0.004,
   rimStrength: 1.5,
@@ -69,10 +75,10 @@ export const SHADING = {
   albedoFloor: 0.02,
   softClipStart: 0.8,
   targetHeight: 0.5,
-  defaultShadowSteps: 24
+  defaultShadowSteps: 40
 } as const
 
-export const MAX_SHADOW_STEPS = 48
+export const MAX_SHADOW_STEPS = 64
 
 /** Slider ranges, shared by the panel and by input clamping. */
 export const RANGES = {

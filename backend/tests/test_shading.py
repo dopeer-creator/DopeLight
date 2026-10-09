@@ -41,6 +41,12 @@ def test_constants_match_the_app() -> None:
         "shadowSoftMax": shading.SHADOW_SOFT_MAX,
         "shadowReach": shading.SHADOW_REACH,
         "shadowThickness": shading.SHADOW_THICKNESS,
+        "shadowLodScale": shading.SHADOW_LOD_SCALE,
+        "shadowSpread": shading.SHADOW_SPREAD,
+        "shadowMaxLod": shading.SHADOW_MAX_LOD,
+        "thicknessScale": shading.THICKNESS_SCALE,
+        "thicknessMax": shading.THICKNESS_MAX,
+        "thicknessCodeMin": shading.THICKNESS_CODE_MIN,
         "embedFade": shading.EMBED_FADE,
         "shellDilate": shading.SHELL_DILATE,
         "rimStrength": shading.RIM_STRENGTH,
@@ -115,6 +121,63 @@ def test_shadow_falls_behind_a_block_only() -> None:
     assert float(without[behind]) > 0.0
     assert float(shadowed[behind]) == pytest.approx(0.0, abs=1e-6)
     assert float(shadowed[in_front]) == pytest.approx(float(without[in_front]), rel=1e-5)
+
+
+def test_thickness_code_marks_the_subject_and_how_deep_it_is() -> None:
+    wide = 200
+    mask = np.zeros((80, wide), dtype=np.float32)
+    mask[10:70, 60:140] = 1.0
+    code = shading.thickness_code(mask)
+    scale = shading.THICKNESS_SCALE
+    assert code[5, 5] == 0.0  # background: solid all the way back
+    # Just inside the outline it is as thin as it gets, in the middle as thick as it gets.
+    assert code[40, 61] == pytest.approx(scale / (shading.THICKNESS_MIN + scale), abs=0.02)
+    assert code[40, 100] == pytest.approx(scale / (shading.THICKNESS_MAX + scale), abs=0.02)
+    assert code[40, 59] > shading.THICKNESS_CODE_MIN  # widened by a pixel past the mask
+    # No subject to speak of: nothing is marked.
+    assert float(shading.thickness_code(np.ones((80, wide), dtype=np.float32)).max()) == 0.0
+
+
+def test_march_levels_keep_subject_and_background_apart() -> None:
+    depth = torch.full((8, 8), 0.2)
+    depth[:, 4:] = 0.9  # the subject: the right half, much nearer
+    code = torch.zeros((8, 8))
+    code[:, 4:] = 0.5  # thickness = THICKNESS_SCALE
+    levels = shading.march_levels(depth, code)
+    assert [tuple(level.shape[1:]) for level in levels] == [(8, 8), (4, 4), (2, 2), (1, 1)]
+    ground, share, front, deep = levels[-1][:, 0, 0]  # everything averaged into one value
+    assert float(share) == pytest.approx(0.5)
+    # Divided by their shares, both depths come back whole: not one wall of middling height.
+    assert float(ground / (1.0 - share)) == pytest.approx(0.2)
+    assert float(front / share) == pytest.approx(0.9)
+    assert float(deep / share) == pytest.approx(shading.THICKNESS_SCALE)
+
+
+def test_subject_casts_a_shadow_but_light_passes_behind_it() -> None:
+    """A slab standing in front of a far wall, lit from the left at its own height."""
+    wide, high = 120, 60
+    depth = np.full((high, wide), 0.05, dtype=np.float32)  # the wall, far back
+    mask = np.zeros((high, wide), dtype=np.float32)
+    mask[10:50, 50:70] = 1.0
+    depth[10:50, 50:70] = 0.9  # the subject: z = 0.36, at most 0.1 thick
+    grey = np.full((high, wide, 3), 0.5, dtype=np.float32)
+    facing = np.tile(np.array([0.0, 0.0, 1.0], dtype=np.float32), (high, wide, 1))
+    lamp = dict(x=0.02, y=0.5, z=0.36, specular=0.0, diffusion=0.0, radius=3.0)
+
+    def lit_with(thickness: np.ndarray | None, shadows: bool) -> torch.Tensor:
+        scene = shading.prepare_scene(grey, facing, depth, thickness=thickness)
+        light = Light(**lamp, cast_shadows=shadows, shadow_strength=1.0)  # type: ignore[arg-type]
+        return shading.shade_scene(scene, [light], NO_BASE, jitter=0.0).relit
+
+    open_wall = lit_with(None, False)
+    solid = lit_with(None, True)  # no thickness map: the subject reaches back to the wall
+    slab = lit_with(shading.thickness_code(mask), True)
+    wall_behind = (30, 100, 0)  # on the wall, on the far side of the subject from the light
+    assert float(open_wall[wall_behind]) > 0.0
+    assert float(solid[wall_behind]) == pytest.approx(0.0, abs=1e-6)
+    # The light is level with the slab; the wall is far behind it, and the ray to it
+    # passes behind the slab's back face.
+    assert float(slab[wall_behind]) == pytest.approx(float(open_wall[wall_behind]), rel=0.02)
 
 
 def test_light_behind_a_shape_still_reaches_the_floor_around_it() -> None:

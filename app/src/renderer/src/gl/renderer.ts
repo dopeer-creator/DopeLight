@@ -23,6 +23,8 @@ export interface RelightMaps {
   aux: TexImageSource
   /** Depth 0..1 (1 = nearest), row by row from the top. */
   depth: Float32Array
+  /** Where the subject is and how thick, as a 0..255 code (thickness_code() in shading.py); 0 = solid. */
+  thickness: Uint8Array
   width: number
   height: number
 }
@@ -65,6 +67,60 @@ export function dilateDepth(depth: Float32Array, width: number, height: number, 
   return result
 }
 
+export interface MarchLevel {
+  /** RGBA floats, row by row from the top. */
+  data: Float32Array
+  width: number
+  height: number
+}
+
+/**
+ * What the shadow march reads, with its mip levels. Channels: the depth of the
+ * background, the share that is subject, the depth of the subject, the thickness
+ * of the subject; the first is weighted by the share that is background and the
+ * last two by the share that is subject, so that averaging keeps the two apart.
+ * Each level averages 2 x 2 blocks of the one before and has half its size,
+ * rounded down. Same as march_levels() in shading.py.
+ */
+export function marchLevels(depth: Float32Array, thickness: Uint8Array, width: number, height: number): MarchLevel[] {
+  const base = new Float32Array(width * height * 4)
+  for (let i = 0; i < width * height; i++) {
+    const code = thickness[i]! / 255
+    const subject = code > SHADING.thicknessCodeMin ? 1 : 0
+    const deep = Math.min(
+      (SHADING.thicknessScale * (1 - code)) / Math.max(code, SHADING.thicknessCodeMin),
+      SHADING.thicknessMax
+    )
+    base[i * 4] = (1 - subject) * depth[i]!
+    base[i * 4 + 1] = subject
+    base[i * 4 + 2] = subject * depth[i]!
+    base[i * 4 + 3] = subject * deep
+  }
+  const levels: MarchLevel[] = [{ data: base, width, height }]
+  for (;;) {
+    const last = levels[levels.length - 1]!
+    if (Math.min(last.width, last.height) <= 1 || levels.length > SHADING.shadowMaxLod) break
+    const halfWidth = last.width >> 1
+    const halfHeight = last.height >> 1
+    const data = new Float32Array(halfWidth * halfHeight * 4)
+    for (let y = 0; y < halfHeight; y++) {
+      for (let x = 0; x < halfWidth; x++) {
+        const from = (y * 2 * last.width + x * 2) * 4
+        const below = from + last.width * 4
+        const to = (y * halfWidth + x) * 4
+        for (let channel = 0; channel < 4; channel++) {
+          data[to + channel] =
+            0.25 *
+            (last.data[from + channel]! + last.data[from + 4 + channel]! +
+              last.data[below + channel]! + last.data[below + 4 + channel]!)
+        }
+      }
+    }
+    levels.push({ data, width: halfWidth, height: halfHeight })
+  }
+  return levels
+}
+
 /**
  * How far a light is below the photo's surface at its own spot (> 0 = behind it).
  * A directional light has no spot: +-1000 by whether it shines from behind.
@@ -92,7 +148,7 @@ const TYPE_INDEX = { point: 0, directional: 1, spot: 2 } as const
 const MODE_INDEX: Record<ViewMode, number> = { relit: 0, original: 1, lightOnly: 2 }
 
 const UNIFORMS = [
-  'uAlbedo', 'uNormal', 'uDepth', 'uNormalSmooth', 'uAux', 'uSmoothing', 'uFlatten', 'uAspect', 'uLightCount', 'uType', 'uPosition', 'uDirection',
+  'uAlbedo', 'uNormal', 'uDepth', 'uNormalSmooth', 'uAux', 'uMarch', 'uMapWidth', 'uSmoothing', 'uFlatten', 'uAspect', 'uLightCount', 'uType', 'uPosition', 'uDirection',
   'uColor', 'uDiffusion', 'uRadius', 'uSpecular', 'uShininess', 'uCone', 'uShadow', 'uEmbed', 'uBase',
   'uGain', 'uShadowSteps', 'uJitter', 'uMode', 'uSplit'
 ] as const
@@ -118,6 +174,7 @@ export class RelightRenderer {
   private maps: RelightMaps | null = null
   private readonly syncPixel = new Uint8Array(4)
   private aspect = 1
+  private mapWidth = 1
   private ready = false
 
   constructor(private readonly canvas: HTMLCanvasElement | OffscreenCanvas) {
@@ -149,6 +206,7 @@ export class RelightRenderer {
     const gl = this.gl
     for (const texture of this.textures) gl.deleteTexture(texture)
     this.aspect = maps.height / maps.width
+    this.mapWidth = maps.width
     this.maps = maps
 
     // Upload bytes exactly as decoded: no flip, no alpha premultiply, no colour management.
@@ -187,7 +245,18 @@ export class RelightRenderer {
     const aux = this.createTexture(4, false)
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, maps.aux)
 
-    this.textures = [albedo, normal, depth, normalSmooth, aux]
+    // The shadow march's own maps, with mip levels built here: the driver's
+    // mipmaps would not be the same numbers as the Python reference's.
+    const levels = marchLevels(maps.depth, maps.thickness, maps.width, maps.height)
+    const march = this.createTexture(5, true)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_BASE_LEVEL, 0)
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAX_LEVEL, levels.length - 1)
+    const marchFormat = this.floatLinear ? gl.RGBA32F : gl.RGBA16F
+    levels.forEach((level, index) => {
+      gl.texImage2D(gl.TEXTURE_2D, index, marchFormat, level.width, level.height, 0, gl.RGBA, gl.FLOAT, level.data)
+    })
+
+    this.textures = [albedo, normal, depth, normalSmooth, aux, march]
     this.ready = true
   }
 
@@ -250,6 +319,8 @@ export class RelightRenderer {
     gl.uniform1i(u.uDepth, 2)
     gl.uniform1i(u.uNormalSmooth, 3)
     gl.uniform1i(u.uAux, 4)
+    gl.uniform1i(u.uMarch, 5)
+    gl.uniform1f(u.uMapWidth, this.mapWidth)
     gl.uniform1f(u.uSmoothing, params.globals.smoothing)
     gl.uniform1f(u.uFlatten, params.globals.flatten)
     gl.uniform1f(u.uAspect, this.aspect)

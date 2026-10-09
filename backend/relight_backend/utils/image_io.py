@@ -73,6 +73,11 @@ def load_gray8(path: Path) -> FloatArray:
     return np.asarray(Image.open(path).convert("L"), dtype=np.float32) / 255.0
 
 
+def load_gray8_or_zeros(path: Path, like: FloatArray) -> FloatArray:
+    """A grey map, or zeros shaped as `like` when the file is not there."""
+    return load_gray8(path) if path.exists() else np.zeros_like(like)
+
+
 def save_aux(
     reach: FloatArray, brightness: FloatArray, path: Path, rim: FloatArray | None = None
 ) -> None:
@@ -131,6 +136,11 @@ def load_image_array(path: Path) -> np.ndarray[Any, Any]:
     """Read a file written by save_image back as RGB(A), keeping its bit depth."""
     data = _read_unchanged(path)
     return cv2.cvtColor(data, cv2.COLOR_BGRA2RGBA if data.shape[2] == 4 else cv2.COLOR_BGR2RGB)
+
+
+def load_gray8_bytes(path: Path) -> bytes:
+    """The 8-bit values of a grey map as raw bytes, row by row."""
+    return np.ascontiguousarray(_read_unchanged(path).astype(np.uint8)).tobytes()
 
 
 def load_gray16_bytes(path: Path) -> bytes:

@@ -57,6 +57,7 @@ from relight_backend.utils.device import pick_device, release_memory
 from relight_backend.utils.image_io import (
     FloatArray,
     load_aux,
+    load_gray8_or_zeros,
     load_gray16,
     load_image,
     load_normals,
@@ -71,7 +72,7 @@ PHOTOREAL_KINDS = ("relit", "light_layer", "multiply")
 MULTIPLY_ONE = 0.5  # in a multiply layer this stored value means "times 1" (no change)
 FORMATS = {"png": ".png", "jpeg": ".jpg", "tiff": ".tif"}
 BLENDS = ("normal", "linear")
-EXPORT_SHADOW_STEPS = 48  # the preview uses 24; an export can afford smoother shadows
+EXPORT_SHADOW_STEPS = 48  # the preview uses 40; an export can afford slightly crisper shadows
 STRIP_PIXELS = 1_000_000  # pixels shaded per strip
 
 
@@ -193,6 +194,10 @@ def export(
     reach = _scale_up(working_reach, width, height)
     brightness = _scale_up(working_brightness, width, height)
     rim = _scale_up(working_rim, width, height)
+    thickness = _scale_up(
+        load_gray8_or_zeros(folder / map_file("thickness", meta.normals_method), working_reach),
+        width, height,
+    )
 
     active = [light for light in lights if light.enabled]
     suffix = FORMATS[options.format]
@@ -232,7 +237,7 @@ def export(
 
     def render(device: torch.device) -> None:
         scene = prepare_scene(albedo, normals, depth, device, tops, rim, smooth, reach,
-                              brightness)
+                              brightness, thickness)
         strip = max(1, STRIP_PIXELS // width)
         for start in range(0, height, strip):
             reporter.check_cancel()

@@ -232,6 +232,20 @@ def create_app(token: str, data_root: Path | None = None) -> FastAPI:
 
         return Response(load_gray16_bytes(path), media_type="application/octet-stream")
 
+    @app.get("/session/{session_id}/thickness_raw", dependencies=protected)
+    def session_thickness_raw(session_id: str) -> Response:
+        """The thickness map as raw bytes, one per pixel, row by row, at the working size.
+
+        The live preview builds the shadow march's maps from these numbers itself,
+        so it needs them as numbers, not as a picture.
+        """
+        path = store.map_path(session_id, "thickness")
+        if path is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "No such map")
+        from relight_backend.utils.image_io import load_gray8_bytes
+
+        return Response(load_gray8_bytes(path), media_type="application/octet-stream")
+
     @app.get("/session/{session_id}/{map_name}", dependencies=protected)
     def session_map(session_id: str, map_name: str) -> FileResponse:
         path = store.map_path(session_id, map_name)
