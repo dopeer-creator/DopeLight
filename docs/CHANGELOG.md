@@ -14,6 +14,10 @@ Continued the work list from the GPU session. Everything here ran on the laptop'
 
 **Rim light no longer traces a bad cut-out.** On the user's pilot photo the subject cut-out included a piece of the canopy and a ragged patch on one arm, and the rim drew white jagged lines along both. The rim now leaves out stray pieces and uncertain areas of the cut-out. The helper map file is now `aux_v4.png`.
 
+**First test on a high-resolution photo.** The user added a 26 megapixel black-and-white portrait. On it the live preview is crisp and accurate: the cut-out and the face surface come out far better from a sharp photo. The full-size export keeps every pore and lash and changes only the light (14.5 minutes on the laptop's processor). The AI pass adds nothing on this photo; its raw output is a different man, and after the safety net the result is the preview again, slightly flatter.
+
+**Rim light on hair.** A rim on curly hair looked like a glowing tube laid over it. It now lights the strands and leaves the gaps dark, in the preview and in the export. New helper map `detail.png`.
+
 **Cast shadows rebuilt.** Shadow edges were dotted, and a person threw a hard wedge of shadow across everything behind him. Shadows are now clean-edged, crisp where they touch and softer further away, and the subject is treated as having a real thickness, so light passes behind him. This finishes the work started on the branch `wip/shadow-march` the day before, in both the Python reference and the live preview. New helper map `thickness.png`. For a shadow on the floor in front of someone, the light has to be behind him: `docs/scenes/fighter-yellow-from-behind-red-trim.json` shows it.
 
 **Progress you can read.** While a render or export runs, the dialog now shows the whole status line, a clock, and the bar under it; a model download fills the bar and says it happens only once. Before, the text was cut to `Dow...` and the bar stayed empty for the whole download.
