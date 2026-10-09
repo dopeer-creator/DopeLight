@@ -48,7 +48,7 @@ from relight_backend.utils.image_io import (
     FloatArray,
     load_aux,
     load_gray8,
-    load_gray8_or_zeros,
+    load_gray8_or,
     load_gray16,
     load_image,
     load_normals,
@@ -307,7 +307,11 @@ def load_scene(folder: Path, normals_method: str, size: tuple[int, int],
         rim=_resize(rim, size),
         # A session from before the thickness map has none: everything is solid then.
         thickness=_resize(
-            load_gray8_or_zeros(folder / map_file("thickness", normals_method), reach), size
+            load_gray8_or(folder / map_file("thickness", normals_method), reach, 0.0), size
+        ),
+        # ... and no detail map: then a rim is even along an edge (code 0.5 = 1).
+        detail=_resize(
+            load_gray8_or(folder / map_file("detail", normals_method), reach, 0.5), size
         ),
     )
     return photo, scene

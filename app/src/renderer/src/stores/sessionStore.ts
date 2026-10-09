@@ -35,11 +35,15 @@ async function fetchBitmap(path: string): Promise<ImageBitmap> {
 
 async function fetchMaps(sessionId: string): Promise<RelightMaps> {
   const info = (await (await backendFetch(`/session/${sessionId}`)).json()) as SessionInfo
-  const [albedo, normal, normalSmooth, aux, depthBytes, thicknessBytes] = await Promise.all([
+  const [albedo, normal, normalSmooth, aux, detail, depthBytes, thicknessBytes] = await Promise.all([
     fetchBitmap(`/session/${sessionId}/albedo_proxy`),
     fetchBitmap(`/session/${sessionId}/normal`),
     fetchBitmap(`/session/${sessionId}/normal_smooth`),
     fetchBitmap(`/session/${sessionId}/aux`),
+    // Missing on a backend from before this map existed: then one mid-grey pixel, which means "no detail".
+    fetchBitmap(`/session/${sessionId}/detail`).catch(() =>
+      createImageBitmap(new ImageData(new Uint8ClampedArray([128, 128, 128, 255]), 1, 1), RAW_BITMAP)
+    ),
     backendFetch(`/session/${sessionId}/depth_raw`).then((response) => response.arrayBuffer()),
     // Missing on a backend from before this map existed: then everything counts as solid.
     backendFetch(`/session/${sessionId}/thickness_raw`)
@@ -50,7 +54,7 @@ async function fetchMaps(sessionId: string): Promise<RelightMaps> {
   const depth = depthFromUint16(new Uint8Array(depthBytes))
   const thickness =
     thicknessBytes.byteLength === width * height ? new Uint8Array(thicknessBytes) : new Uint8Array(width * height)
-  return { albedo, normal, normalSmooth, aux, depth, thickness, width, height }
+  return { albedo, normal, normalSmooth, aux, detail, depth, thickness, width, height }
 }
 
 /** Counts opens, so a slow earlier open cannot overwrite a newer one. */

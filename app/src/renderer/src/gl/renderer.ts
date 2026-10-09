@@ -21,6 +21,8 @@ export interface RelightMaps {
   normalSmooth: TexImageSource
   /** Helper maps: red = where lights reach, green = sqrt of large-scale brightness, blue and alpha = the rim map. */
   aux: TexImageSource
+  /** Grey: each pixel's brightness next to the subject around it (rim_detail() in shading.py). */
+  detail: TexImageSource
   /** Depth 0..1 (1 = nearest), row by row from the top. */
   depth: Float32Array
   /** Where the subject is and how thick, as a 0..255 code (thickness_code() in shading.py); 0 = solid. */
@@ -148,7 +150,7 @@ const TYPE_INDEX = { point: 0, directional: 1, spot: 2 } as const
 const MODE_INDEX: Record<ViewMode, number> = { relit: 0, original: 1, lightOnly: 2 }
 
 const UNIFORMS = [
-  'uAlbedo', 'uNormal', 'uDepth', 'uNormalSmooth', 'uAux', 'uMarch', 'uMapWidth', 'uSmoothing', 'uFlatten', 'uAspect', 'uLightCount', 'uType', 'uPosition', 'uDirection',
+  'uAlbedo', 'uNormal', 'uDepth', 'uNormalSmooth', 'uAux', 'uMarch', 'uDetail', 'uMapWidth', 'uSmoothing', 'uFlatten', 'uAspect', 'uLightCount', 'uType', 'uPosition', 'uDirection',
   'uColor', 'uDiffusion', 'uRadius', 'uSpecular', 'uShininess', 'uCone', 'uShadow', 'uEmbed', 'uBase',
   'uGain', 'uShadowSteps', 'uJitter', 'uMode', 'uSplit'
 ] as const
@@ -256,7 +258,10 @@ export class RelightRenderer {
       gl.texImage2D(gl.TEXTURE_2D, index, marchFormat, level.width, level.height, 0, gl.RGBA, gl.FLOAT, level.data)
     })
 
-    this.textures = [albedo, normal, depth, normalSmooth, aux, march]
+    const detail = this.createTexture(6, false)
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, maps.detail)
+
+    this.textures = [albedo, normal, depth, normalSmooth, aux, march, detail]
     this.ready = true
   }
 
@@ -320,6 +325,7 @@ export class RelightRenderer {
     gl.uniform1i(u.uNormalSmooth, 3)
     gl.uniform1i(u.uAux, 4)
     gl.uniform1i(u.uMarch, 5)
+    gl.uniform1i(u.uDetail, 6)
     gl.uniform1f(u.uMapWidth, this.mapWidth)
     gl.uniform1f(u.uSmoothing, params.globals.smoothing)
     gl.uniform1f(u.uFlatten, params.globals.flatten)

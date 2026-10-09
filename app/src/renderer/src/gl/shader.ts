@@ -49,6 +49,7 @@ const float RIM_STRENGTH = ${f(SHADING.rimStrength)};
 const float RIM_WHITE = ${f(SHADING.rimWhite)};
 const float RIM_BACK = ${f(SHADING.rimBack)};
 const float RIM_WRAP = ${f(SHADING.rimWrap)};
+const float RIM_DETAIL_MAX = ${f(SHADING.rimDetailMax)};
 const float RIM_FRONT_FADE = ${f(SHADING.rimFrontFade)};
 const float FLATTEN_TARGET = ${f(SHADING.flattenTarget)};
 const float FLATTEN_FLOOR = ${f(SHADING.flattenFloor)};
@@ -65,6 +66,7 @@ uniform sampler2D uAux;    // r: 1 where lights reach, 0 for sky. g: sqrt of lar
                            // its length is how far the shape's rounded edge has turned away
                            // there: 1 at the outline, 0 where the surface faces the viewer
 uniform sampler2D uMarch;  // what the shadow march reads, with mip levels (see marchLevels)
+uniform sampler2D uDetail; // r: each pixel's brightness next to the subject around it, / RIM_DETAIL_MAX
 uniform float uMapWidth;   // width of the maps, in pixels
 uniform float uAspect;     // image height / width
 
@@ -179,7 +181,7 @@ float occlusion(vec3 position, vec3 ray, float diffusion, float jitter, float be
   return occluded;
 }
 
-vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, vec2 rimVector, float noise) {
+vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, vec2 rimVector, float detail, float noise) {
   vec3 toLight;
   vec3 ray;
   float attenuation = 1.0;
@@ -238,9 +240,10 @@ vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, vec2 rimVector
   float rim = RIM_STRENGTH * amount * (1.0 - smoothstep(0.0, RIM_FRONT_FADE, toLight.z));
 
   // Seen edge-on, any surface mirrors more of the light: toward the outline the rim
-  // takes the light's own colour, in a line much thinner than the band.
+  // takes the light's own colour, in a line much thinner than the band. And it
+  // lights each strand of hair, not a band across them (the detail map).
   return uColor[i] * attenuation
-    * (shadow * (albedo * diffuse + specular) + rim * mix(albedo, vec3(1.0), RIM_WHITE * turn4));
+    * (shadow * (albedo * diffuse + specular) + rim * detail * mix(albedo, vec3(1.0), RIM_WHITE * turn4));
 }
 
 void main() {
@@ -249,6 +252,7 @@ void main() {
   vec3 normal = normalize(texture(uNormal, vUv).rgb * 2.0 - 1.0);
   vec3 smoothNormal = normalize(texture(uNormalSmooth, vUv).rgb * 2.0 - 1.0);
   vec4 aux = texture(uAux, vUv);
+  float detail = texture(uDetail, vUv).r * RIM_DETAIL_MAX;
   float depth = texture(uDepth, vUv).r;
   vec2 rimVector = (aux.ba * 255.0 - 128.0) / 127.0; // stored as 128 + 127 * value
 
@@ -272,7 +276,7 @@ void main() {
   vec3 lightSum = vec3(0.0);
   for (int i = 0; i < MAX_LIGHTS; i++) {
     if (i >= uLightCount) break;
-    lightSum += contribution(i, litAlbedo, normal, position, rimVector, noise);
+    lightSum += contribution(i, litAlbedo, normal, position, rimVector, detail, noise);
   }
   lightSum *= aux.r; // no light on the sky and the far distance
 

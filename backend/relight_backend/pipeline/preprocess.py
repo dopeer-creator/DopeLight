@@ -22,7 +22,7 @@ from relight_backend.models import specs
 from relight_backend.models.base import Model
 from relight_backend.pipeline.normals_from_depth import normals_from_depth
 from relight_backend.pipeline.sessions import ORIGINAL_FILE, SessionMeta, SessionStore, map_file
-from relight_backend.pipeline.shading import rim_field, thickness_code
+from relight_backend.pipeline.shading import rim_detail, rim_field, thickness_code
 from relight_backend.utils import downloads
 from relight_backend.utils.device import pick_device, pick_dtype
 from relight_backend.utils.image_io import (
@@ -227,6 +227,10 @@ def preprocess(
     thickness_path = folder / map_file("thickness", options.normals)
     if not thickness_path.exists():
         save_gray8(thickness_code(load_gray8(mask_path)), thickness_path)
+    detail_path = folder / map_file("detail", options.normals)
+    if not detail_path.exists():
+        save_gray8(rim_detail(np.asarray(working, dtype=np.float32) / 255.0,
+                              load_gray8(mask_path)), detail_path)
 
     meta = SessionMeta(
         id=session_id,

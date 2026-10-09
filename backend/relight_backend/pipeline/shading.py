@@ -71,6 +71,11 @@ MIN_SUBJECT_SHARE = 0.02  # a mask covering less of the picture than this is no 
 MAX_SUBJECT_SHARE = 0.9  # ... nor one covering more than this
 RIM_BACK = 0.3  # glow on every edge from a light straight behind the shape (hair, fuzz, cloth)
 RIM_WRAP = 0.3  # how far behind the shape a light must be for the rim to spread to its full band
+# A rim on hair must light strands, not paint a band over them: the rim is scaled by how
+# bright each pixel is next to the subject around it (see rim_detail).
+RIM_DETAIL_SIGMA = 0.01  # size of "around it", as a fraction of the map width
+RIM_DETAIL_GRAIN = 0.0007  # blur that keeps film grain out of it, as a fraction of the width
+RIM_DETAIL_MAX = 2.0  # most a pixel can count as brighter than its surroundings
 RIM_FRONT_FADE = 0.5  # the rim is gone once the light is this far round to the front
 # "Even out original light": lights act on the photo's colours scaled toward a
 # mid-grey exposure, so they do not just multiply the lighting already in it.
@@ -333,6 +338,34 @@ def mask_sureness(mask: FloatArray, sigma: float) -> FloatArray:
     return np.asarray(t * t * (3.0 - 2.0 * t), dtype=np.float32)
 
 
+def rim_detail(image: FloatArray, mask: FloatArray) -> FloatArray:
+    """How bright each pixel is next to the subject around it, as a 0..1 code.
+
+    `image` is the photo (sRGB floats, H x W x 3), `mask` the subject mask. The
+    value is the pixel's brightness divided by the average brightness of the
+    subject within RIM_DETAIL_SIGMA of it, at most RIM_DETAIL_MAX, and the code
+    is that divided by RIM_DETAIL_MAX: 0.5 means "as bright as its surroundings".
+
+    A rim light multiplied by it lights each strand of hair and leaves the gaps
+    between them dark, as a real backlight does. On skin and plain cloth it is
+    close to 1 and changes nothing. Off the subject it is 1.
+    """
+    width = image.shape[1]
+    linear = np.where(image <= 0.04045, image / 12.92, ((image + 0.055) / 1.055) ** 2.4)
+    sharp = np.asarray(linear @ np.array([0.2126, 0.7152, 0.0722]), dtype=np.float32)
+    brightness = np.asarray(
+        cv2.GaussianBlur(sharp, (0, 0), max(0.5, width * RIM_DETAIL_GRAIN)), dtype=np.float32
+    )
+    inside = (mask > 0.5).astype(np.float32)
+    sigma = max(1.0, width * RIM_DETAIL_SIGMA)
+    around = cv2.GaussianBlur(brightness * inside, (0, 0), sigma) / np.maximum(
+        cv2.GaussianBlur(inside, (0, 0), sigma), 1e-3
+    )
+    detail = np.clip(brightness / np.maximum(around, 0.01), 0.0, RIM_DETAIL_MAX)
+    detail = np.where(inside > 0.0, detail, 1.0)
+    return np.asarray(detail / RIM_DETAIL_MAX, dtype=np.float32)
+
+
 def rim_field(depth: FloatArray, mask: FloatArray | None = None) -> FloatArray:
     """How the shapes turn away at their outlines: (H, W, 2), x right, y up.
 
@@ -365,9 +398,11 @@ def rim_field(depth: FloatArray, mask: FloatArray | None = None) -> FloatArray:
         radius = cv2.GaussianBlur(local_radius(np.asarray(from_edge, dtype=np.float32), limit),
                                   (0, 0), band / 6.0)
         # A circle's edge: this far in, the surface has turned by acos(1 - distance / radius).
+        # A pixel that is only part subject (a wisp of hair) gets only part of the rim.
+        part = np.clip((mask - RIM_MASK_EDGE) / (1.0 - 2.0 * RIM_MASK_EDGE), 0.0, 1.0)
         turn = np.asarray(
             np.clip(1.0 - (from_edge - 1.0) / np.maximum(radius, 1.0), 0.0, 1.0) * inside
-            * mask_sureness(mask, band / 2.0),
+            * mask_sureness(mask, band / 2.0) * part * part * (3.0 - 2.0 * part),
             dtype=np.float32,
         )
         # Blurred well: the staircase of a pixel outline would otherwise show as a comb of
@@ -529,8 +564,8 @@ def _occlusion(
 
 def _contribution(
     light: Light, albedo: Tensor, normal: Tensor, position: Tensor, depth: Tensor,
-    levels: list[Tensor], tops: Tensor, rim_vectors: Tensor, aspect: float, noise: Tensor,
-    steps: int, jitter: float,
+    levels: list[Tensor], tops: Tensor, rim_vectors: Tensor, detail: Tensor, aspect: float,
+    noise: Tensor, steps: int, jitter: float,
 ) -> Tensor:
     device = albedo.device
     direction = torch.tensor(light_direction(light, aspect), device=device)
@@ -600,7 +635,8 @@ def _contribution(
 
     color = torch.tensor(light.color, device=device) * light.intensity
     lit = shadow[..., None] * (albedo * diffuse[..., None] + specular[..., None])
-    return color * attenuation[..., None] * (lit + rim[..., None] * rim_colour)
+    # ... and it lights each strand of hair, not a band across them (see rim_detail).
+    return color * attenuation[..., None] * (lit + (rim * detail)[..., None] * rim_colour)
 
 
 @dataclass
@@ -616,6 +652,7 @@ class Scene:
     reach: Tensor  # 1 where lights reach, 0 for sky and the far distance
     brightness: Tensor  # large-scale linear brightness of the photo
     levels: list[Tensor]  # what the shadow march reads (see march_levels)
+    detail: Tensor  # each pixel's brightness next to the subject around it (see rim_detail)
 
 
 def prepare_scene(
@@ -624,6 +661,7 @@ def prepare_scene(
     tops: FloatArray | None = None, rim: FloatArray | None = None,
     normal_smooth: FloatArray | None = None, reach: FloatArray | None = None,
     brightness: FloatArray | None = None, thickness: FloatArray | None = None,
+    detail: FloatArray | None = None,
 ) -> Scene:
     """Convert float32 maps (the app's map conventions) for shading.
 
@@ -631,6 +669,7 @@ def prepare_scene(
     that way knows no subject mask). An export passes them in, made at the
     working size and scaled up like the depth itself.
     `thickness` is the code from thickness_code(); without it everything is solid.
+    `detail` is the code from rim_detail(); without it a rim is even along an edge.
     """
     device = device or torch.device("cpu")
     heights = torch.from_numpy(np.ascontiguousarray(depth)).to(device)
@@ -654,6 +693,7 @@ def prepare_scene(
         levels=march_levels(
             heights, torch.zeros_like(heights) if thickness is None else given(thickness)
         ),
+        detail=torch.ones_like(heights) if detail is None else given(detail) * RIM_DETAIL_MAX,
     )
 
 
@@ -700,7 +740,7 @@ def shade_scene(
     per_light = [
         _contribution(
             light, lit_albedo, normal, position, scene.heights, scene.levels, scene.tops,
-            scene.rim[start:end], aspect, noise, shadow_steps, jitter,
+            scene.rim[start:end], scene.detail[start:end], aspect, noise, shadow_steps, jitter,
         ) * reach
         for light in active
     ]

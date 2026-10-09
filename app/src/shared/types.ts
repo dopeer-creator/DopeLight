@@ -71,6 +71,7 @@ export interface ParityFixture {
   normal: Uint8Array
   normalSmooth: Uint8Array
   aux: Uint8Array
+  detail: Uint8Array
   /** raw little-endian uint16 */
   depth: Uint8Array
   /** raw bytes, one per pixel */

@@ -50,6 +50,7 @@ export async function runParity(): Promise<void> {
       normal: await pngBitmap(fixture.normal),
       normalSmooth: await pngBitmap(fixture.normalSmooth),
       aux: await pngBitmap(fixture.aux),
+      detail: await pngBitmap(fixture.detail),
       // Copy: the IPC buffer may not be aligned for a Uint16Array view.
       depth: depthFromUint16(fixture.depth.slice()),
       thickness: fixture.thickness,

@@ -53,6 +53,7 @@ def test_constants_match_the_app() -> None:
         "rimWhite": shading.RIM_WHITE,
         "rimBack": shading.RIM_BACK,
         "rimWrap": shading.RIM_WRAP,
+        "rimDetailMax": shading.RIM_DETAIL_MAX,
         "rimFrontFade": shading.RIM_FRONT_FADE,
         "flattenTarget": shading.FLATTEN_TARGET,
         "flattenFloor": shading.FLATTEN_FLOOR,
@@ -271,6 +272,41 @@ def test_rim_ignores_strays_and_uncertain_parts_of_the_mask() -> None:
     turn = np.linalg.norm(shading.rim_field(flat, unsure), axis=-1)
     assert turn[40, 20] > 0.85  # the clean left edge still has its rim
     assert turn[20:60, 60:100].max() < 0.1  # nothing is traced through the cloud
+
+
+def test_rim_detail_is_one_on_plain_areas_and_follows_strands() -> None:
+    wide = 200
+    mask = np.zeros((80, wide), dtype=np.float32)
+    mask[10:70, 40:160] = 1.0
+    image = np.full((80, wide, 3), 0.5, dtype=np.float32)
+    for column in range(100, 160, 8):  # the right half of the subject is "hair": light strands
+        image[10:70, column:column + 4] = 0.85
+        image[10:70, column + 4:column + 8] = 0.2
+    detail = shading.rim_detail(image, mask) * shading.RIM_DETAIL_MAX
+    assert detail[5, 5] == pytest.approx(1.0)  # off the subject
+    assert detail[40, 60] == pytest.approx(1.0, abs=0.05)  # plain skin or cloth
+    assert detail[40, 126] > 1.3  # a strand
+    assert detail[40, 122] < 0.4  # the gap beside it
+
+
+def test_the_rim_is_scaled_by_the_detail_map() -> None:
+    wide = 200
+    mask = np.zeros((80, wide), dtype=np.float32)
+    mask[10:70, 70:130] = 1.0
+    depth = np.where(mask > 0.5, 0.8, 0.1).astype(np.float32)
+    grey = np.full((80, wide, 3), 0.5, dtype=np.float32)
+    facing = np.tile(np.array([0.0, 0.0, 1.0], dtype=np.float32), (80, wide, 1))
+    behind_right = Light(x=0.95, y=0.5, z=0.12, specular=0.0, diffusion=0.2, intensity=0.5)
+
+    def rim_at_the_edge(code: float | None) -> float:
+        detail = None if code is None else np.full((80, wide), code, dtype=np.float32)
+        scene = shading.prepare_scene(grey, facing, depth, rim=shading.rim_field(depth, mask),
+                                      detail=detail)
+        return float(shading.shade_scene(scene, [behind_right], NO_BASE).relit[40, 129, 0])
+
+    plain = rim_at_the_edge(None)
+    assert rim_at_the_edge(0.5) == pytest.approx(plain, rel=1e-4)  # code 0.5 means 1
+    assert rim_at_the_edge(0.25) == pytest.approx(0.5 * plain, rel=1e-3)  # a gap between strands
 
 
 def test_a_light_behind_and_to_one_side_rims_that_side_of_the_subject() -> None:

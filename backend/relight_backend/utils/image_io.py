@@ -73,9 +73,9 @@ def load_gray8(path: Path) -> FloatArray:
     return np.asarray(Image.open(path).convert("L"), dtype=np.float32) / 255.0
 
 
-def load_gray8_or_zeros(path: Path, like: FloatArray) -> FloatArray:
-    """A grey map, or zeros shaped as `like` when the file is not there."""
-    return load_gray8(path) if path.exists() else np.zeros_like(like)
+def load_gray8_or(path: Path, like: FloatArray, fill: float) -> FloatArray:
+    """A grey map, or `fill` everywhere (shaped as `like`) when the file is not there."""
+    return load_gray8(path) if path.exists() else np.full_like(like, fill)
 
 
 def save_aux(

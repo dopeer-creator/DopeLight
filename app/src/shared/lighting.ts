@@ -68,6 +68,7 @@ export const SHADING = {
   rimWhite: 0.6,
   rimBack: 0.3,
   rimWrap: 0.3,
+  rimDetailMax: 2.0,
   rimFrontFade: 0.5,
   flattenTarget: 0.18,
   flattenFloor: 0.02,

@@ -34,6 +34,7 @@ from relight_backend.pipeline.shading import (  # noqa: E402
     GlobalSettings,
     Light,
     prepare_scene,
+    rim_detail,
     rim_field,
     shade_scene,
     srgb_to_linear,
@@ -95,8 +96,12 @@ def build_maps() -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, np.ndarr
     (OUT / "thickness.raw").write_bytes(
         np.clip(thickness * 255.0 + 0.5, 0, 255).astype(np.uint8).tobytes()
     )
+    # The checkerboard gives the box's rim something to follow, as hair would.
+    save_gray8(rim_detail(albedo8.astype(np.float32) / 255.0, box.astype(np.float32)),
+               OUT / "detail.png")
     helpers = {"normal_smooth": load_normals(OUT / "normal_smooth.png"), "reach": reach8,
-               "brightness": brightness, "rim": rim8, "thickness": thickness}
+               "brightness": brightness, "rim": rim8, "thickness": thickness,
+               "detail": load_gray8(OUT / "detail.png")}
     return albedo8, normals, depth16, helpers
 
 

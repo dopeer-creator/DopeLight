@@ -50,6 +50,7 @@ from relight_backend.pipeline.shading import (
     dilate_depth,
     linear_to_srgb,
     prepare_scene,
+    rim_detail,
     shade_scene,
     srgb_to_linear,
 )
@@ -57,7 +58,8 @@ from relight_backend.utils.device import pick_device, release_memory
 from relight_backend.utils.image_io import (
     FloatArray,
     load_aux,
-    load_gray8_or_zeros,
+    load_gray8,
+    load_gray8_or,
     load_gray16,
     load_image,
     load_normals,
@@ -195,9 +197,14 @@ def export(
     brightness = _scale_up(working_brightness, width, height)
     rim = _scale_up(working_rim, width, height)
     thickness = _scale_up(
-        load_gray8_or_zeros(folder / map_file("thickness", meta.normals_method), working_reach),
+        load_gray8_or(folder / map_file("thickness", meta.normals_method), working_reach, 0.0),
         width, height,
     )
+    # The detail map is made from the full-size photo itself: scaled up from the working
+    # size it would be a blur, and a rim on hair is all fine detail.
+    mask_path = folder / map_file("mask", meta.normals_method)
+    detail = (rim_detail(albedo, _scale_up(load_gray8(mask_path), width, height))
+              if mask_path.exists() else None)
 
     active = [light for light in lights if light.enabled]
     suffix = FORMATS[options.format]
@@ -237,7 +244,7 @@ def export(
 
     def render(device: torch.device) -> None:
         scene = prepare_scene(albedo, normals, depth, device, tops, rim, smooth, reach,
-                              brightness, thickness)
+                              brightness, thickness, detail)
         strip = max(1, STRIP_PIXELS // width)
         for start in range(0, height, strip):
             reporter.check_cancel()
