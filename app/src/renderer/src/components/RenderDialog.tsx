@@ -1,6 +1,7 @@
 import { Dices, X } from 'lucide-react'
 import { useBackendStore } from '../stores/backendStore'
 import { useRenderStore } from '../stores/renderStore'
+import { JobProgress } from './JobProgress'
 
 const ADHERENCE = { min: 0, max: 1, step: 0.01 }
 const STEPS = { min: 8, max: 40, step: 1 }
@@ -105,10 +106,7 @@ export function RenderDialog(): React.JSX.Element | null {
         <footer className="dialog-footer">
           {running ? (
             <>
-              <div className="progress" role="progressbar" aria-valuenow={Math.round(progress * 100)}>
-                <div className="progress-fill" style={{ width: `${progress * 100}%` }} />
-              </div>
-              <span className="dialog-status">{message}</span>
+              <JobProgress progress={progress} message={message} />
               <button className="button" onClick={cancel}>
                 Cancel
               </button>

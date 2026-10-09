@@ -10,6 +10,7 @@ import {
 } from '../stores/exportStore'
 import { useRenderStore } from '../stores/renderStore'
 import { useLightsStore } from '../stores/lightsStore'
+import { JobProgress } from './JobProgress'
 
 const KINDS: { value: ExportKind; label: string; hint: string }[] = [
   { value: 'relit', label: 'Relit image', hint: 'The finished picture, at the original size.' },
@@ -182,10 +183,7 @@ export function ExportDialog(): React.JSX.Element | null {
         <footer className="dialog-footer">
           {running ? (
             <>
-              <div className="progress" role="progressbar" aria-valuenow={Math.round(progress * 100)}>
-                <div className="progress-fill" style={{ width: `${progress * 100}%` }} />
-              </div>
-              <span className="dialog-status">{message}</span>
+              <JobProgress progress={progress} message={message} />
               <button className="button" onClick={cancel}>
                 Cancel
               </button>

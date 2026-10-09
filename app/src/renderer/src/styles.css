@@ -639,6 +639,38 @@ p {
   white-space: nowrap;
 }
 
+/* An error is read, not glanced at: show all of it. */
+.dialog-status.canvas-message--error {
+  white-space: normal;
+  line-height: 1.4;
+}
+
+.job-progress {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.job-progress-text {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.job-progress-time {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.progress--wide {
+  width: 100%;
+}
+
 .dialog-note {
   padding: 8px 10px;
   border-radius: 8px;

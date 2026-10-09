@@ -12,6 +12,8 @@ Continued the work list from the GPU session. Everything here ran on the laptop'
 
 **Found on the way.** A rim built from a pixel outline shows comb-like stripes along vertical edges unless the edge direction is blurred well. The helper map file is now `aux_v3.png`; photos opened before get it rebuilt on their next open (quick).
 
+**Progress you can read.** While a render or export runs, the dialog now shows the whole status line, a clock, and the bar under it; a model download fills the bar and says it happens only once. Before, the text was cut to `Dow...` and the bar stayed empty for the whole download.
+
 **Pictures.** `handoff/results/2026-10-09-laptop/`.
 
 **Not done.** Cast shadows (branch `wip/shadow-march`), the spotlight edge, the light shaft, and deciding how much the AI model is still needed: with these changes it alters the picture only a little.

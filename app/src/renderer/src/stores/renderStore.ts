@@ -83,11 +83,17 @@ export const useRenderStore = create<RenderStore>((set, get) => ({
       let renderId: string | null = null
       for await (const event of jobEvents(jobId)) {
         if (event.type === 'progress') {
-          const download =
-            event.download_total_mb !== undefined
-              ? ` (${event.download_done_mb} / ${event.download_total_mb} MB)`
-              : ''
-          set({ progress: event.progress ?? 0, message: `${event.message ?? ''}${download}` })
+          const total = event.download_total_mb
+          if (total !== undefined && total > 0) {
+            // A model download: the bar shows the download itself, which can take a while.
+            const done = event.download_done_mb ?? 0
+            set({
+              progress: done / total,
+              message: `${event.message ?? 'Downloading'}: ${done} of ${total} MB. This happens once; later renders start straight away.`
+            })
+          } else {
+            set({ progress: event.progress ?? 0, message: event.message ?? '' })
+          }
         } else if (event.type === 'error') {
           throw new Error(event.error ?? 'Render failed')
         } else if (event.type === 'cancelled') {
