@@ -2,6 +2,20 @@
 
 What changed, newest first, in plain words. One entry per working session. The detail of how things work is in `docs/ARCHITECTURE.md`; where the work stands and what is next is in `CLAUDE.md`. Add an entry before ending a session.
 
+## 2026-10-09 — laptop
+
+Continued the work list from the GPU session. Everything here ran on the laptop's CPU; none of it has been run on the RTX 4050 yet.
+
+**Photoreal pass keeps rim lights and colour.** The last step (putting the AI model's light onto the photo) was rebuilt. The result is now the preview's own picture at full size, with the model only scaling its brightness broadly. Rim lights are added exactly as the preview draws them. Fixed by this: rims coming out dim and muddy, a blue rim turning white, and the fighter's black shorts turning blue-grey. Commit `7699ee7`.
+
+**Rim light follows the form.** Before, a rim was a band of one width and one strength around the subject, which read as an outline drawn around a person. Now each part of the subject gets a rounded edge as thick as the part is (broad on a shoulder, a hairline on a finger), and the rim is the light that edge catches: only on the side the light is on, a bright thin line at the outline fading inward, in the light's colour. A light level with the subject gives just the line; a light behind gives the full band. Live preview shader and Python reference changed together; the parity check (23 scenes) and the app smoke test (29 checks) pass.
+
+**Found on the way.** A rim built from a pixel outline shows comb-like stripes along vertical edges unless the edge direction is blurred well. The helper map file is now `aux_v3.png`; photos opened before get it rebuilt on their next open (quick).
+
+**Pictures.** `handoff/results/2026-10-09-laptop/`.
+
+**Not done.** Cast shadows (branch `wip/shadow-march`), the spotlight edge, the light shaft, and deciding how much the AI model is still needed: with these changes it alters the picture only a little.
+
 ## 2026-10-08 — RTX 4050 PC (second session of the day)
 
 First session on the GPU PC after Phases 2 to 4 arrived from the laptop.
