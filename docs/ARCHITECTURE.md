@@ -38,6 +38,7 @@ All require `Authorization: Bearer <token>`.
 | `GET /session/{id}` | sizes, normals method, and per-model time/VRAM stats of a finished session |
 | `GET /session/{id}/{map}` | PNG; map is `albedo_proxy`, `normal`, `normal_smooth`, `depth`, `mask`, or `aux` |
 | `GET /session/{id}/depth_raw` | depth as raw little-endian uint16, row by row at working size. The preview uses this: browsers decode 16-bit PNGs to 8 bits, which would band the heightfield |
+| `GET /session/{id}/thickness_raw` | the thickness map (where the subject is and how thick) as raw bytes, one per pixel. The preview builds the shadow march's maps from these numbers |
 | `POST /session/{id}/export` | JSON: `lights`, `globals`, `kind` (`relit`, `light_layer`, `per_light`), `format` (`png`, `jpeg`, `tiff`), `bit_depth` (8, 16), `quality`, `blend` (`normal`, `linear`), `alpha`, `render_id` (optional: export that photoreal render instead of the preview; kinds then are `relit`, `light_layer`, `multiply`), `target` (full path of the main file). Renders at full resolution and writes the files; returns `job_id`; the job's result lists the files |
 | `POST /session/{id}/render` | photoreal pass. JSON: `lights`, `globals`, `prompt`, `steps` (4..60), `adherence` (0..1), `seed`, `long_edge` (256..1280, default 768), `highres`. Returns `job_id`; the job's result holds `render_id`, the size used, seconds, peak VRAM, and a note if it had to shrink |
 | `GET /session/{id}/render/{rid}` | that render applied to the photo, at screen size (JPEG) |
@@ -238,7 +239,7 @@ Per light, with `N` the normal, `L` the unit vector to the light, `V = (0, 0, 1)
 | falloff (point, spot) | `1 / (1 + (d / r)²)`, `r = radius × (1 + diffusion)` |
 | cone (spot) | `smoothstep(cos(angle/2), cos(angle/2 × (1 − softness)), −L·dir)` |
 | specular | Blinn-Phong: `specular × (N·H)^shininess`, faded out as `N·L` drops below 0.1 |
-| shadow | march from the pixel toward the light over the depth heightfield (24 steps, at most 48), jittered per pixel; the deepest overlap divided by a penumbra width (0.012 to 0.08, growing with diffusion) is the occlusion |
+| shadow | march from the pixel toward the light over the depth heightfield (40 samples, at most 64), jittered per pixel; each sample reads the maps blurred to the width of its step; the background is solid, the subject a slab of its own thickness; the deepest overlap divided by a penumbra width (0.012 to 0.08, growing with diffusion) is the occlusion. See "Cast shadows" below |
 | rim | `1.5 × amount × (1 − smoothstep(0, 0.5, L.z))`, coloured `mix(albedo, 1, 0.6 × t⁴)`. The rim map gives each pixel a vector `R` pointing out of the shape it is on, with length `t`: how far the shape's rounded edge has turned away there, 1 at the outline, 0 where it faces the viewer. `(R, √(1 − t²))` is the normal of that rounded edge, and the rim is diffuse light on it: `caught = (R · L.xy + t × wrap) / (1 + wrap) − √(1 − t²) × max(−L.z, 0)`. `amount = clamp(max(caught, 0) × spread + 0.3 × max(−L.z, 0)² × t⁴, 0, 1)`, with `spread = mix(t⁴, 1, smoothstep(0, 0.3, −L.z))`: a light level with the shape gets only the line at the outline, a light behind it the whole band; the last term is the glow on every edge from a light straight behind. Not shadowed |
 | contribution | `colour × intensity × falloff × cone × (shadow × (albedo × diffuse + specular) + rim × mix(albedo, white, 0.35))` |
 
@@ -266,6 +267,22 @@ Later the same day, for the user's coloured-light references: under a light noth
 
 Preprocess writes the helper maps: `normal_smooth_<method>.png`, `reach.png` (kept beside the depth), and `aux_v4.png` (red = reach, green = square root of brightness, blue and alpha = the rim map; `aux.png` had two channels, `aux_v2.png` an older rim map), which the app loads as two more textures. Sessions made before this get them on the next open (the depth model runs again, about 2 s on CPU).
 
+### Cast shadows (rebuilt 2026-10-09)
+
+The first shadow march took 24 evenly spaced samples of the raw depth map along the ray to the light. Two faults showed on the user's photos. Shapes fell between samples, so shadow edges came out dotted (the per-pixel jitter turns banding into dots). And every shape counted as a solid reaching back to the horizon, so a person threw a hard-edged wedge of shadow across everything behind him.
+
+Now (`_occlusion` in `shading.py`, `occlusion()` in the shader):
+
+- **Each sample reads a blurred copy of the maps, as wide as the step it takes** (a mip level; `SHADOW_LOD_SCALE` = 2 step lengths). Nothing can fall between two samples, so edges are clean. A soft light adds blur with distance (`SHADOW_SPREAD` × diffusion × distance travelled): the penumbra.
+- **Steps grow with distance** (the sample positions go as the square): short near the lit point, long far away. A shadow is crisp where it touches and soft further off. Only the part of the ray that is over the picture and below the tallest possible shape is marched.
+- **The subject is a slab, not a wall.** Preprocess writes a thickness map from the subject mask (`thickness_code`, `thickness.png`, 8-bit): a part is taken to be about as deep as it is wide, 0.03 to 0.1 of the image width. Light passes behind the subject. Everything else stays solid.
+- **Subject and background are kept in separate channels** of the march texture (`march_levels`: background depth, share that is subject, subject depth, subject thickness, each weighted by its share). Blurring one height map instead would raise a low wall around every shape, which then casts its own shadow.
+- A thin slab is tested so that the answer does not depend on where in it a sample lands (entered within half its thickness, left three half steps late); otherwise the jitter shows as a mesh of dots.
+
+The app builds the march texture itself (`marchLevels` in `gl/renderer.ts`, RGBA float with its own mip levels) from the depth and the thickness bytes, the same numbers as Python, because a driver's mipmaps would differ. Parity: all 24 scenes within the limits, one of them the box as a slab casting its shadow.
+
+Cost: each sample is one trilinear read of a 4-channel float texture, and there are 40 by default (24 before). Not re-measured; expect a shadowed light to cost roughly twice what the table under "Speed" says.
+
 ### Lights behind the surface
 
 A depth map only describes the visible front of things. Shadows normally treat every shape as a solid reaching all the way back, which is the safe guess for a light in front. A light placed behind a shape would then be buried inside a solid and light nothing.
@@ -288,7 +305,7 @@ The shader's numbers come from `SHADING` in `app/src/shared/lighting.ts`; `shadi
 
 ### Parity test
 
-`npm run parity` builds a synthetic scene (sloped floor, dome, box), has Electron render 23 light setups with the real shader off screen, renders the same with `shading.py`, and compares the 8-bit results. The box counts as the subject, so the rim map is exercised. Limits: mean difference at most 0.5 levels and at most 0.5 % of pixels off by more than 3 levels. Measured on the build laptop (Intel Iris Xe, 2026-10-08): **every scene within 1 level of 255, mean 0.05 to 0.09**, including shadows with jitter, lights behind the surface, and eight mixed lights. The same holds on the RTX 4050 PC with the rebuilt rim light (2026-10-08: 23 scenes, at most 1 level, mean at most 0.09). Side-by-side images land in `parity-out/`.
+`npm run parity` builds a synthetic scene (sloped floor, dome, box), has Electron render 24 light setups with the real shader off screen, renders the same with `shading.py`, and compares the 8-bit results. The box counts as the subject, so the rim map is exercised. Limits: mean difference at most 0.5 levels and at most 0.5 % of pixels off by more than 3 levels. Measured on the build laptop (Intel Iris Xe, 2026-10-08): **every scene within 1 level of 255, mean 0.05 to 0.09**, including shadows with jitter, lights behind the surface, and eight mixed lights. The same holds on the RTX 4050 PC with the rebuilt rim light (2026-10-08: 23 scenes, at most 1 level, mean at most 0.09). Side-by-side images land in `parity-out/`.
 
 ### Speed
 
@@ -302,7 +319,7 @@ Measured with `RELIGHT_BENCH=1` on the build laptop (Intel Iris Xe integrated gr
 | 3 lights, 2 with shadows | 15.1 ms (66 fps) | 51.5 ms (19 fps) |
 | 8 lights, all with shadows | 47.3 ms (21 fps) | 153.3 ms (7 fps) |
 
-**Not yet measured on the RTX 4050.** Shadows dominate the cost (24 depth samples per shadowed light per pixel).
+**Not yet measured on the RTX 4050.** Shadows dominate the cost. These numbers are from before the shadows were rebuilt (24 samples of a 2-channel map; now 40 of a 4-channel one): measure again on both PCs.
 
 ### Reference targets
 
@@ -319,6 +336,6 @@ Development helpers are environment variables read by `app/src/main/dev.ts` (`RE
 ### Known limits
 
 - In pure-black parts of a photo the estimated normals are noise, so lights draw blotchy patterns there.
-- Shadows come from a heightfield seen from one side: there is nothing behind the visible surface, and depth edges cast hard-edged shadows.
-- With a light behind the surface, the lit backdrop can show a fine dotted pattern (the per-pixel jitter of the shadow samples against the hard shell edge).
+- Shadows come from a heightfield seen from one side: there is nothing behind the visible surface. The subject's thickness is a guess from its outline. A light level with the subject (neither clearly in front nor behind) grazes its front face over a long stretch, and its shadow on what lies behind is then vague; it shows banding at more than about 48 samples.
+- In the relief the floor is a ramp toward the viewer. A light directly above the subject puts his shadow on the floor behind him; for a shadow on the floor in front, the light has to sit behind him (Close · Far toward Far).
 - A lost WebGL context is not recovered; the app would need a restart.

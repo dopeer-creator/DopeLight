@@ -14,11 +14,13 @@ Continued the work list from the GPU session. Everything here ran on the laptop'
 
 **Rim light no longer traces a bad cut-out.** On the user's pilot photo the subject cut-out included a piece of the canopy and a ragged patch on one arm, and the rim drew white jagged lines along both. The rim now leaves out stray pieces and uncertain areas of the cut-out. The helper map file is now `aux_v4.png`.
 
+**Cast shadows rebuilt.** Shadow edges were dotted, and a person threw a hard wedge of shadow across everything behind him. Shadows are now clean-edged, crisp where they touch and softer further away, and the subject is treated as having a real thickness, so light passes behind him. This finishes the work started on the branch `wip/shadow-march` the day before, in both the Python reference and the live preview. New helper map `thickness.png`. For a shadow on the floor in front of someone, the light has to be behind him: `docs/scenes/fighter-yellow-from-behind-red-trim.json` shows it.
+
 **Progress you can read.** While a render or export runs, the dialog now shows the whole status line, a clock, and the bar under it; a model download fills the bar and says it happens only once. Before, the text was cut to `Dow...` and the bar stayed empty for the whole download.
 
 **Pictures.** `handoff/results/2026-10-09-laptop/`.
 
-**Not done.** Cast shadows (branch `wip/shadow-march`), the spotlight edge, the light shaft, and deciding how much the AI model is still needed: with these changes it alters the picture only a little.
+**Not done.** Frame-time measurement with the new shadows, the light shaft, and deciding how much the AI model is still needed: with these changes it alters the picture only a little.
 
 ## 2026-10-08 — RTX 4050 PC (second session of the day)
 
