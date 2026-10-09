@@ -20,7 +20,7 @@ import logging
 import time
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,7 @@ from relight_backend.pipeline.sessions import ORIGINAL_FILE, SessionStore, map_f
 from relight_backend.pipeline.shading import (
     GlobalSettings,
     Light,
+    Scene,
     prepare_scene,
     shade_scene,
     to_srgb8,
@@ -67,7 +68,8 @@ GUIDED_EPSILON = 0.01
 COLOUR_LIMIT = 1.5  # a channel may change at most this much more (or less) than brightness
 COLOUR_SIGMA = 0.04  # blur of the colour change, as a fraction of the width
 SUBJECT_FEATHER = 0.006  # softening of the subject mask's edge, as a fraction of the width
-DETAIL_LIMIT = 2.5  # bound on the fine light taken from the full-size preview
+# The largest ratio that means anything: it takes a black pixel to full white.
+RATIO_FULL = (1.0 + RATIO_EPSILON) / RATIO_EPSILON
 BRIGHTNESS_LEASH = 2.5  # how far the model's brightness may depart from the preview's
 MODEL_COLOUR_LIMIT = 3.0  # bound on the model's own colour, where it is used at all
 # The user's lights own the colour where they supply this share of the brightness or more.
@@ -231,26 +233,46 @@ def smoothed_preview_ratio(original: FloatArray, hint: FloatArray) -> FloatArray
     return _raw_ratio(base, lights)
 
 
-def add_preview_detail(
-    ratio: FloatArray, preview_low: FloatArray, original_full: FloatArray, hint_full: FloatArray
-) -> FloatArray:
-    """Sharpen a low-resolution ratio with the fine light of the full-size preview.
+def model_correction(ratio: FloatArray, preview_low: FloatArray) -> FloatArray:
+    """What the model changed, relative to the preview's own light. 1 = it agrees.
 
-    The diffusion model works small, and its light is smoothed on top, so by
-    itself the result is soft. The preview shading is exact per pixel at the
-    working size: the edge of light along a muscle, a fold, a rim. So the light
-    is split in two: the broad part (where it falls, how it fades) stays the
-    model's; the fine part is the preview's, as the factor between the exact
-    full-size preview ratio and its own smoothed low-resolution version.
-
-    Where the model agrees with the preview, the result is the crisp preview.
+    Both arguments are ratios to the original at the diffusion size: the model's
+    light (`lighting_ratio`) and the preview's (`smoothed_preview_ratio`). The
+    result is broad and bounded: brightness within the leash, and the model's
+    colour only where the user's lights do not decide it.
     """
-    height, width = original_full.shape[:2]
-    exact = _raw_ratio(_linear(original_full), _linear(hint_full))
-    fine = exact / np.maximum(_resize(preview_low, (width, height)), 1e-3)
-    fine = np.clip(fine, 1.0 / DETAIL_LIMIT, DETAIL_LIMIT)
-    sharp = _resize(ratio, (width, height)) * fine
-    return np.asarray(np.clip(sharp, RATIO_MIN, RATIO_MAX), dtype=np.float32)
+    limit = BRIGHTNESS_LEASH * MODEL_COLOUR_LIMIT
+    correction = ratio / np.maximum(preview_low, 1e-3)
+    return np.asarray(np.clip(correction, 1.0 / limit, limit), dtype=np.float32)
+
+
+def compose_ratio(
+    correction: FloatArray, original: FloatArray, shading: FloatArray, rim: FloatArray
+) -> FloatArray:
+    """The final ratio, at the working size: the preview's picture, corrected by the model.
+
+    `original`, `shading`, and `rim` are linear light at the working size:
+    the photo, the preview's shading of it without rim light, and the rim light
+    by itself. The result is
+
+        shading * correction + rim
+
+    so every edge of light is the preview's, exact per pixel: along a muscle, a
+    fold, a shadow. The model only scales it, broadly. (Before, the model's
+    light was measured small and smoothed, and the result was soft.)
+
+    - The correction multiplies the shading itself, not a ratio with the
+      epsilon in it. A black cloth the lights do not reach stays black; with the
+      epsilon a "2.5 times brighter" from the model turned it grey.
+    - The rim is added untouched. The model does not draw rims, so measured
+      against it a rim only ever came out dimmer, and its colour washed out.
+    - Nothing is capped per channel short of full white, so a saturated light on
+      dark hair keeps its colour.
+    """
+    height, width = original.shape[:2]
+    lit = shading * _resize(correction, (width, height)) + rim
+    ratio = (np.clip(lit, 0.0, 1.0) + RATIO_EPSILON) / (original + RATIO_EPSILON)
+    return np.asarray(np.clip(ratio, RATIO_MIN, RATIO_FULL), dtype=np.float32)
 
 
 def apply_ratio(original: FloatArray, ratio: FloatArray) -> FloatArray:
@@ -265,9 +287,9 @@ def apply_ratio(original: FloatArray, ratio: FloatArray) -> FloatArray:
     return np.asarray(np.clip(scaled - RATIO_EPSILON, 0.0, 1.0), dtype=np.float32)
 
 
-def make_hint(folder: Path, normals_method: str, size: tuple[int, int], lights: list[Light],
-              settings: GlobalSettings) -> tuple[Image.Image, Image.Image]:
-    """(the photo, the lighting hint) at the diffusion size."""
+def load_scene(folder: Path, normals_method: str, size: tuple[int, int],
+               ) -> tuple[Image.Image, Scene]:
+    """(the photo, its maps ready for shading) at the given size."""
     photo = Image.open(folder / map_file("albedo_proxy", normals_method)).convert("RGB")
     photo = photo.resize(size, Image.Resampling.LANCZOS)
     reach, brightness, rim = load_aux(folder / map_file("aux", normals_method))
@@ -282,8 +304,51 @@ def make_hint(folder: Path, normals_method: str, size: tuple[int, int], lights: 
         brightness=_resize(brightness, size),
         rim=_resize(rim, size),
     )
+    return photo, scene
+
+
+def shade_parts(scene: Scene, lights: list[Light], settings: GlobalSettings,
+                ) -> tuple[FloatArray, FloatArray]:
+    """(the preview's shading without rim light, the rim light alone), linear light.
+
+    Their sum is the preview's picture.
+    """
+    whole = shade_scene(scene, lights, settings).relit
+    plain = shade_scene(replace(scene, rim=torch.zeros_like(scene.rim)), lights, settings).relit
+    return (np.asarray(plain.cpu().numpy(), dtype=np.float32),
+            np.asarray((whole - plain).clamp_min(0.0).cpu().numpy(), dtype=np.float32))
+
+
+def make_hint(folder: Path, normals_method: str, size: tuple[int, int], lights: list[Light],
+              settings: GlobalSettings) -> tuple[Image.Image, Image.Image]:
+    """(the photo, the lighting hint) at the diffusion size."""
+    photo, scene = load_scene(folder, normals_method, size)
     shaded = shade_scene(scene, lights, settings)
     return photo, Image.fromarray(to_srgb8(shaded.relit), mode="RGB")
+
+
+def transfer(
+    folder: Path, normals_method: str, working_size: tuple[int, int], relit: Image.Image,
+    lights: list[Light], settings: GlobalSettings,
+) -> FloatArray:
+    """The lighting ratio at the working size, from the model's picture and the preview's."""
+    original = load_image(folder / ORIGINAL_FILE)
+    small = np.asarray(original.resize(relit.size, Image.Resampling.LANCZOS),
+                       dtype=np.float32) / 255.0
+    subject = _resize(load_gray8(folder / map_file("mask", normals_method)), relit.size)
+    # The model is compared with the preview without its rim light: it draws no
+    # rims, and beside one it would only seem to have darkened the edge.
+    _photo, small_scene = load_scene(folder, normals_method, relit.size)
+    plain_small = _srgb(shade_parts(small_scene, lights, settings)[0])
+    base_level = (settings.keep_original_light + settings.ambient) * 2.0**settings.exposure
+    ratio = lighting_ratio(small, np.asarray(relit, dtype=np.float32) / 255.0, plain_small,
+                           subject, base_level)
+    correction = model_correction(ratio, smoothed_preview_ratio(small, plain_small))
+
+    photo, scene = load_scene(folder, normals_method, working_size)
+    shading, rim = shade_parts(scene, lights, settings)
+    return compose_ratio(correction, _linear(np.asarray(photo, dtype=np.float32) / 255.0),
+                         shading, rim)
 
 
 def _step_reporter(reporter: Reporter, total: int) -> Callable[[], None]:
@@ -364,25 +429,9 @@ def render(
     assert relit is not None
 
     reporter.report("transfer", 0.92, "Applying the new light to the full-size photo")
+    ratio = transfer(folder, meta.normals_method, (working_width, working_height), relit,
+                     lights, settings)
     original = load_image(folder / ORIGINAL_FILE)
-    small = np.asarray(original.resize(relit.size, Image.Resampling.LANCZOS),
-                       dtype=np.float32) / 255.0
-    subject = _resize(load_gray8(folder / map_file("mask", meta.normals_method)), relit.size)
-    hint_small = np.asarray(hint.resize(relit.size, Image.Resampling.LANCZOS),
-                            dtype=np.float32) / 255.0
-    base_level = (settings.keep_original_light + settings.ambient) * 2.0**settings.exposure
-    ratio = lighting_ratio(small, np.asarray(relit, dtype=np.float32) / 255.0, hint_small,
-                           subject, base_level)
-    # Crisp light: the fine detail comes from the preview shaded at the full working size.
-    reporter.report("transfer", 0.95, "Sharpening the light")
-    working_photo, working_hint = make_hint(
-        folder, meta.normals_method, (working_width, working_height), lights, settings
-    )
-    ratio = add_preview_detail(
-        ratio, smoothed_preview_ratio(small, hint_small),
-        np.asarray(working_photo, dtype=np.float32) / 255.0,
-        np.asarray(working_hint, dtype=np.float32) / 255.0,
-    )
 
     render_id = uuid.uuid4().hex[:12]
     out = folder / "renders" / render_id

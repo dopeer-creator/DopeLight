@@ -150,20 +150,58 @@ def test_light_the_model_adds_on_its_own_keeps_the_models_colour() -> None:
     assert ratio[0] > 1.2 > 0.9 > ratio[2]  # still warm, not grey
 
 
-def test_fine_light_comes_from_the_full_size_preview() -> None:
+def _lit_left_half() -> tuple[np.ndarray, np.ndarray]:
+    """A textured photo and the preview's shading of it: the left half lit, with a hard edge."""
     rng = np.random.default_rng(3)
-    original = rng.uniform(0.3, 0.6, (64, 96, 3)).astype(np.float32)
-    # The preview lights the left half, with a hard edge: fine detail a small ratio cannot hold.
-    hint = original.copy()
-    hint[:, :48] = np.clip(hint[:, :48] * 1.5, 0, 1)
-    small_original = photoreal._resize(original, (24, 16))
-    small_hint = photoreal._resize(hint, (24, 16))
-    preview_low = photoreal.smoothed_preview_ratio(small_original, small_hint)
-    # A model that agrees with the preview: the sharpened result is the exact, crisp preview.
-    sharp = photoreal.add_preview_detail(preview_low, preview_low, original, hint)
-    exact = photoreal._raw_ratio(photoreal._linear(original), photoreal._linear(hint))
-    assert np.abs(sharp - exact).max() < 0.02
-    assert sharp[32, 46, 0] - sharp[32, 50, 0] > 1.0  # the edge is one pixel sharp, not a ramp
+    original = photoreal._linear(rng.uniform(0.3, 0.6, (64, 96, 3)).astype(np.float32))
+    shading = original.copy()
+    shading[:, :48] *= 1.8
+    return original, shading
+
+
+def test_where_the_model_agrees_the_result_is_the_exact_preview() -> None:
+    original, shading = _lit_left_half()
+    agrees = np.ones((16, 24, 3), dtype=np.float32)
+    ratio = photoreal.compose_ratio(agrees, original, shading, np.zeros_like(original))
+    relit = apply_ratio(photoreal._srgb(original), ratio)
+    assert np.abs(relit - shading).max() < 2e-3
+    assert ratio[32, 46, 0] - ratio[32, 50, 0] > 0.5  # the edge is one pixel sharp, not a ramp
+
+
+def test_the_model_scales_the_shading_but_never_the_rim() -> None:
+    original, shading = _lit_left_half()
+    rim = np.zeros_like(original)
+    rim[:, 90:] = (0.0, 0.1, 0.6)  # a blue rim on the right edge
+    dimmer = np.full((16, 24, 3), 0.5, dtype=np.float32)  # the model: half as bright everywhere
+    relit = apply_ratio(photoreal._srgb(original),
+                        photoreal.compose_ratio(dimmer, original, shading, rim))
+    assert np.allclose(relit[:, :90], shading[:, :90] * 0.5, atol=2e-3)
+    assert np.allclose(relit[:, 90:], shading[:, 90:] * 0.5 + rim[:, 90:], atol=2e-3)
+
+
+def test_a_saturated_rim_on_black_keeps_its_colour() -> None:
+    black = np.zeros((32, 48, 3), dtype=np.float32)
+    rim = np.zeros_like(black)
+    rim[:, 40:] = (0.02, 0.1, 0.9)  # strong blue on dark hair
+    agrees = np.ones((8, 12, 3), dtype=np.float32)
+    relit = apply_ratio(black, photoreal.compose_ratio(agrees, black, black, rim))
+    assert np.allclose(relit[16, 44], (0.02, 0.1, 0.9), atol=2e-3)  # not capped toward white
+
+
+def test_the_model_cannot_lift_what_the_lights_leave_black() -> None:
+    """Black cloth stays black: the correction scales the shading, epsilon and all left out."""
+    cloth = np.full((32, 48, 3), 0.004, dtype=np.float32)  # linear: nearly black
+    brighter = np.full((8, 12, 3), photoreal.BRIGHTNESS_LEASH, dtype=np.float32)
+    relit = apply_ratio(photoreal._srgb(cloth),
+                        photoreal.compose_ratio(brighter, cloth, cloth, np.zeros_like(cloth)))
+    assert relit.max() < 0.012  # 2.5 times nearly black is still nearly black
+
+
+def test_model_correction_is_one_where_the_model_agrees_and_bounded() -> None:
+    preview = np.full((8, 12, 3), 1.7, dtype=np.float32)
+    assert np.allclose(photoreal.model_correction(preview, preview), 1.0)
+    wild = photoreal.model_correction(preview * 100.0, preview)
+    assert wild.max() <= photoreal.BRIGHTNESS_LEASH * photoreal.MODEL_COLOUR_LIMIT
 
 
 def test_ratio_transfer_keeps_the_originals_detail() -> None:
