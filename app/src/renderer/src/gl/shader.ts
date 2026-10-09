@@ -45,8 +45,8 @@ const float SHADOW_THICKNESS = ${f(SHADING.shadowThickness)};
 const float EMBED_FADE = ${f(SHADING.embedFade)};
 const float RIM_STRENGTH = ${f(SHADING.rimStrength)};
 const float RIM_WHITE = ${f(SHADING.rimWhite)};
-const float RIM_THIN = ${f(SHADING.rimThin)};
 const float RIM_BACK = ${f(SHADING.rimBack)};
+const float RIM_WRAP = ${f(SHADING.rimWrap)};
 const float RIM_FRONT_FADE = ${f(SHADING.rimFrontFade)};
 const float FLATTEN_TARGET = ${f(SHADING.flattenTarget)};
 const float FLATTEN_FLOOR = ${f(SHADING.flattenFloor)};
@@ -60,7 +60,8 @@ uniform sampler2D uDepth;  // r: depth 0..1, 1 = nearest. g: highest depth withi
 uniform sampler2D uNormalSmooth; // the same normals, blurred
 uniform sampler2D uAux;    // r: 1 where lights reach, 0 for sky. g: sqrt of large-scale brightness.
                            // b, a: the rim map, a vector pointing out of the shape a pixel is on;
-                           // its length is 1 at the outline and 0 a band's width inside it
+                           // its length is how far the shape's rounded edge has turned away
+                           // there: 1 at the outline, 0 where the surface faces the viewer
 uniform float uAspect;     // image height / width
 
 uniform int uLightCount;
@@ -169,20 +170,32 @@ vec3 contribution(int i, vec3 albedo, vec3 normal, vec3 position, vec2 rimVector
       * occlusion(position, ray, uDiffusion[i], (noise - 0.5) * uJitter, behind, thickness);
   }
 
-  // Rim light: an edge glows when it faces the light, or when the light is behind
-  // the shape; not when the light is in front. It is not shadowed: the rim is
-  // exactly the light that gets past the shape.
-  float edge = length(rimVector);
-  vec2 outward = rimVector / max(edge, 1e-4);
-  // A light behind the shape rims every edge, also those turned away from it.
-  float amount = clamp(max(dot(outward, toLight.xy), 0.0) + RIM_BACK * max(-toLight.z, 0.0), 0.0, 1.0)
-    * (1.0 - smoothstep(0.0, RIM_FRONT_FADE, toLight.z));
-  float reach = mix(RIM_THIN, 1.0, uDiffusion[i]); // a softer light, a broader rim
-  float across = clamp((edge - (1.0 - reach)) / reach, 0.0, 1.0);
-  float rim = RIM_STRENGTH * amount * across * across * across; // brightest at the very edge
+  // Rim light: the light a shape's rounded edge catches from a light beside or
+  // behind it. The rim map is the normal of that rounded edge:
+  // (rimVector, sqrt(1 - |rimVector|^2)). Plain diffuse shading on it gives a band
+  // that is bright at the outline, only on the side the light is on, wider the
+  // further round to the side the light is, and as wide as the shape is thick.
+  // It is not shadowed: it is exactly the light that gets past the shape.
+  float turn = min(length(rimVector), 1.0); // 1 at the outline, 0 facing us
+  float fromBack = max(-toLight.z, 0.0);
+  // A softer light wraps further round, as in the diffuse term.
+  float caught = (dot(rimVector, toLight.xy) + turn * wrap) / (1.0 + wrap)
+    - sqrt(1.0 - turn * turn) * fromBack;
+  // Straight from behind, nothing faces the light; what glows is hair, fuzz and
+  // cloth letting it through, on every edge.
+  float turn4 = turn * turn * turn * turn;
+  // A light level with the shape lights its side, which the ordinary shading
+  // already does from the photo's own normals; of the rim only the line at the
+  // outline is left. The further behind the light goes, the more of the band it gets.
+  float spread = mix(turn4, 1.0, smoothstep(0.0, RIM_WRAP, fromBack));
+  float amount = clamp(max(caught, 0.0) * spread + RIM_BACK * fromBack * fromBack * turn4, 0.0, 1.0);
+  // A light in front is the ordinary shading's business.
+  float rim = RIM_STRENGTH * amount * (1.0 - smoothstep(0.0, RIM_FRONT_FADE, toLight.z));
 
+  // Seen edge-on, any surface mirrors more of the light: toward the outline the rim
+  // takes the light's own colour, in a line much thinner than the band.
   return uColor[i] * attenuation
-    * (shadow * (albedo * diffuse + specular) + rim * mix(albedo, vec3(1.0), RIM_WHITE));
+    * (shadow * (albedo * diffuse + specular) + rim * mix(albedo, vec3(1.0), RIM_WHITE * turn4));
 }
 
 void main() {

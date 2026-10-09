@@ -39,6 +39,7 @@ from relight_backend.pipeline.shading import (
     Scene,
     prepare_scene,
     shade_scene,
+    soft_clip,
     to_srgb8,
 )
 from relight_backend.utils import downloads
@@ -253,9 +254,9 @@ def compose_ratio(
 
     `original`, `shading`, and `rim` are linear light at the working size:
     the photo, the preview's shading of it without rim light, and the rim light
-    by itself. The result is
+    by itself, the last two before the highlight roll-off. The result is
 
-        shading * correction + rim
+        roll-off(shading * correction + rim)
 
     so every edge of light is the preview's, exact per pixel: along a muscle, a
     fold, a shadow. The model only scales it, broadly. (Before, the model's
@@ -270,8 +271,8 @@ def compose_ratio(
       dark hair keeps its colour.
     """
     height, width = original.shape[:2]
-    lit = shading * _resize(correction, (width, height)) + rim
-    ratio = (np.clip(lit, 0.0, 1.0) + RATIO_EPSILON) / (original + RATIO_EPSILON)
+    lit = soft_clip(torch.from_numpy(shading * _resize(correction, (width, height)) + rim))
+    ratio = (lit.clamp(0.0, 1.0).numpy() + RATIO_EPSILON) / (original + RATIO_EPSILON)
     return np.asarray(np.clip(ratio, RATIO_MIN, RATIO_FULL), dtype=np.float32)
 
 
@@ -311,10 +312,13 @@ def shade_parts(scene: Scene, lights: list[Light], settings: GlobalSettings,
                 ) -> tuple[FloatArray, FloatArray]:
     """(the preview's shading without rim light, the rim light alone), linear light.
 
-    Their sum is the preview's picture.
+    Both are taken before the highlight roll-off: their sum, rolled off, is the
+    preview's picture.
     """
-    whole = shade_scene(scene, lights, settings).relit
-    plain = shade_scene(replace(scene, rim=torch.zeros_like(scene.rim)), lights, settings).relit
+    whole = shade_scene(scene, lights, settings).unclipped
+    plain = shade_scene(replace(scene, rim=torch.zeros_like(scene.rim)), lights,
+                        settings).unclipped
+    assert whole is not None and plain is not None
     return (np.asarray(plain.cpu().numpy(), dtype=np.float32),
             np.asarray((whole - plain).clamp_min(0.0).cpu().numpy(), dtype=np.float32))
 
@@ -339,7 +343,8 @@ def transfer(
     # The model is compared with the preview without its rim light: it draws no
     # rims, and beside one it would only seem to have darkened the edge.
     _photo, small_scene = load_scene(folder, normals_method, relit.size)
-    plain_small = _srgb(shade_parts(small_scene, lights, settings)[0])
+    plain_small = _srgb(soft_clip(torch.from_numpy(
+        shade_parts(small_scene, lights, settings)[0])).numpy())
     base_level = (settings.keep_original_light + settings.ambient) * 2.0**settings.exposure
     ratio = lighting_ratio(small, np.asarray(relit, dtype=np.float32) / 255.0, plain_small,
                            subject, base_level)

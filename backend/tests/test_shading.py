@@ -3,6 +3,7 @@
 import re
 from pathlib import Path
 
+import cv2
 import numpy as np
 import pytest
 import torch
@@ -44,8 +45,8 @@ def test_constants_match_the_app() -> None:
         "shellDilate": shading.SHELL_DILATE,
         "rimStrength": shading.RIM_STRENGTH,
         "rimWhite": shading.RIM_WHITE,
-        "rimThin": shading.RIM_THIN,
         "rimBack": shading.RIM_BACK,
+        "rimWrap": shading.RIM_WRAP,
         "rimFrontFade": shading.RIM_FRONT_FADE,
         "flattenTarget": shading.FLATTEN_TARGET,
         "flattenFloor": shading.FLATTEN_FLOOR,
@@ -166,6 +167,45 @@ def test_rim_map_follows_the_subject_mask_and_points_outward() -> None:
     assert strength[H // 2, W // 2] == 0.0 and strength[2, 2] == 0.0
     assert rim[H // 2, 20, 0] < 0 < rim[H // 2, 39, 0]  # left edge points left, right edge right
     assert rim[10, W // 2, 1] > 0 > rim[29, W // 2, 1]  # top edge points up, bottom edge down
+
+
+def test_a_thin_part_gets_a_thinner_rim_than_a_thick_one() -> None:
+    wide = 200
+    mask = np.zeros((80, wide), dtype=np.float32)
+    mask[10:70, 20:80] = 1.0  # a torso, 60 pixels across
+    mask[10:70, 120:126] = 1.0  # a finger, 6 pixels across
+    from_edge = cv2.distanceTransform((mask > 0.5).astype(np.uint8), cv2.DIST_L2, 5)
+    radius = shading.local_radius(from_edge.astype(np.float32), wide * shading.RIM_RADIUS)
+    assert radius[40, 50] == pytest.approx(wide * shading.RIM_RADIUS)  # capped
+    assert radius[40, 122] == pytest.approx(3.0, abs=0.5)  # half the finger's width
+    assert radius[5, 5] == 0.0  # nothing outside the shape
+
+    turn = np.linalg.norm(shading.rim_field(np.full((80, wide), 0.5, dtype=np.float32), mask),
+                          axis=-1)
+    # Three pixels in from the right-hand edge of each: the torso is still turning
+    # away there, the finger already faces the viewer.
+    assert turn[40, 77] > turn[40, 123] + 0.25
+    assert turn[40, 79] > 0.85 and turn[40, 125] > 0.85  # both are edge-on at the outline
+
+
+def test_a_light_behind_and_to_one_side_rims_that_side_of_the_subject() -> None:
+    wide = 200
+    mask = np.zeros((80, wide), dtype=np.float32)
+    mask[10:70, 70:130] = 1.0
+    depth = np.where(mask > 0.5, 0.8, 0.1).astype(np.float32)
+    scene = shading.prepare_scene(
+        np.full((80, wide, 3), 0.5, dtype=np.float32),
+        np.tile(np.array([0.0, 0.0, 1.0], dtype=np.float32), (80, wide, 1)), depth,
+        rim=shading.rim_field(depth, mask),
+    )
+    behind_right = Light(x=0.95, y=0.5, z=0.12, specular=0.0, diffusion=0.2, intensity=2.0)
+    result = shading.shade_scene(scene, [behind_right], NO_BASE).relit
+    right_edge, a_little_in = (40, 129, 0), (40, 124, 0)
+    left_edge, middle = (40, 70, 0), (40, 100, 0)
+    assert float(result[right_edge]) > 0.3
+    assert float(result[right_edge]) > float(result[a_little_in]) > 0.0  # fades inward
+    assert float(result[left_edge]) < 0.05 * float(result[right_edge])  # the far side stays dark
+    assert float(result[middle]) == 0.0
 
 
 def test_light_in_front_gives_no_rim() -> None:

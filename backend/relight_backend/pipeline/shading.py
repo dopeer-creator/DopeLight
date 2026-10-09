@@ -39,15 +39,16 @@ SHELL_DILATE = 0.004  # radius of the "top nearby" filter, as a fraction of the 
 # by themselves, so the outline's own direction decides.
 RIM_STRENGTH = 1.5  # brightness of the rim
 RIM_EDGE_SCALE = 0.08  # depth step that counts as a full outline
-RIM_WHITE = 0.35  # how much of the rim is the light's own colour rather than the surface's
-RIM_BAND = 0.024  # how far in from an outline a rim can reach, as a fraction of the map width
+RIM_WHITE = 0.6  # how much of the light's own colour the rim takes at the very outline
+RIM_BAND = 0.024  # width of the rounded edge of a shape with no subject mask (fraction of width)
+RIM_RADIUS = 0.04  # largest radius a subject's edge is rounded with (fraction of width)
+RIM_RADIUS_STEP = 1.12  # ratio between the radii tried when measuring how thick a shape is
 RIM_SOFTEN = 0.7  # blur of the rim map, in pixels: takes the stair-steps off the outline
-RIM_EDGE_GAIN = 1.5  # gain after that blur, so the outermost pixel is at full strength again
 RIM_MASK_EDGE = 0.25  # mask value from which a pixel counts as the subject's outline
 MIN_SUBJECT_SHARE = 0.02  # a mask covering less of the picture than this is no subject
 MAX_SUBJECT_SHARE = 0.9  # ... nor one covering more than this
-RIM_THIN = 0.35  # share of that band a hard light (diffusion 0) covers; a soft one covers it all
-RIM_BACK = 0.6  # rim on every edge from a light straight behind, next to 1 for an edge facing it
+RIM_BACK = 0.3  # glow on every edge from a light straight behind the shape (hair, fuzz, cloth)
+RIM_WRAP = 0.3  # how far behind the shape a light must be for the rim to spread to its full band
 RIM_FRONT_FADE = 0.5  # the rim is gone once the light is this far round to the front
 # "Even out original light": lights act on the photo's colours scaled toward a
 # mid-grey exposure, so they do not just multiply the lighting already in it.
@@ -141,6 +142,7 @@ class Shaded:
     base: Tensor | None = None  # the image with the scene settings but no lights
     # Per-light contributions, exposed but NOT soft-clipped (for splitting a layer by light).
     raw_per_light: list[Tensor] = field(default_factory=list)
+    unclipped: Tensor | None = None  # relit before the highlight roll-off (soft_clip)
 
 
 def srgb_to_linear(value: Tensor) -> Tensor:
@@ -265,33 +267,64 @@ def _outward(field: FloatArray, sigma: float) -> FloatArray:
                       dtype=np.float32)
 
 
-def rim_field(depth: FloatArray, mask: FloatArray | None = None) -> FloatArray:
-    """Where a rim light can land and which way is out there: (H, W, 2), x right, y up.
+def local_radius(from_edge: FloatArray, limit: float) -> FloatArray:
+    """How thick the shape is at each pixel: the radius of the largest disc that fits inside
+    the shape and covers the pixel, up to `limit`. `from_edge` is the distance to the outline.
 
-    Each pixel holds a vector pointing out of the shape it is on. Its length is
-    1 at the outline and falls to 0 at rim_band() pixels inward; 0 elsewhere.
+    A finger gets a few pixels, a shoulder the limit.
+    """
+    radius = np.zeros_like(from_edge)
+    level = min(limit, float(from_edge.max()))
+    while level >= 1.0:
+        centres = (from_edge >= level).astype(np.uint8)
+        reach = cv2.distanceTransform(1 - centres, cv2.DIST_L2, 5)
+        radius = np.where((radius == 0.0) & (reach < level), level, radius)
+        level /= RIM_RADIUS_STEP
+    return np.asarray(radius, dtype=np.float32)
+
+
+def rim_field(depth: FloatArray, mask: FloatArray | None = None) -> FloatArray:
+    """How the shapes turn away at their outlines: (H, W, 2), x right, y up.
+
+    A photo's normals and depth say little about the last few pixels before an
+    outline, where a real surface turns edge-on to the camera. That turn is what
+    a rim light catches. So each shape is given a rounded edge here: every pixel
+    holds a vector pointing out of the shape it is on, whose length is how far
+    the surface has turned: 1 at the outline (edge-on), 0 where it faces the
+    camera. Together with z = sqrt(1 - length^2) it is a surface normal.
 
     With a subject mask, the rim is the subject's alone and its outline is the
-    mask's, which follows the visible edge to the pixel. The depth map's edges
-    sit a few pixels off (a rim drawn from them leaves a dark line outside the
-    light), so they are used only for a photo with no subject to speak of.
+    mask's, which follows the visible edge to the pixel. Each part is rounded
+    with its own thickness (local_radius): a rim light is broad on a shoulder
+    and a hairline on a finger. The depth map's edges sit a few pixels off the
+    visible ones, so they are used only for a photo with no subject to speak of,
+    with one fixed width.
     """
     band = rim_band(depth.shape[1])
-    sigma = band / 3.0
     share = 0.0 if mask is None else float((mask > 0.5).mean())
     if mask is None or not MIN_SUBJECT_SHARE <= share <= MAX_SUBJECT_SHARE:
-        ramp, outward = _depth_outline(depth, band), _outward(depth, sigma)
+        turn, outward = _depth_outline(depth, band), _outward(depth, band / 3.0)
     else:
         # The outline pixels are part subject, part background; the rim covers them too.
         inside = (mask > RIM_MASK_EDGE).astype(np.uint8)
         from_edge = cv2.distanceTransform(inside, cv2.DIST_L2, 5)
-        ramp = np.asarray(np.clip(1.0 - (from_edge - 1.0) / band, 0.0, 1.0) * inside,
-                          dtype=np.float32)
-        outward = _outward(mask, sigma)
-    # The blur takes a third off the outermost pixel, the one that matters most; the gain
-    # gives it back.
-    strength = np.clip(cv2.GaussianBlur(ramp, (0, 0), RIM_SOFTEN) * RIM_EDGE_GAIN, 0.0, 1.0)
-    return np.asarray(outward * strength[..., None], dtype=np.float32)
+        limit = max(4.0, depth.shape[1] * RIM_RADIUS)
+        radius = cv2.GaussianBlur(local_radius(np.asarray(from_edge, dtype=np.float32), limit),
+                                  (0, 0), band / 6.0)
+        # A circle's edge: this far in, the surface has turned by acos(1 - distance / radius).
+        turn = np.asarray(
+            np.clip(1.0 - (from_edge - 1.0) / np.maximum(radius, 1.0), 0.0, 1.0) * inside,
+            dtype=np.float32,
+        )
+        # Blurred well: the staircase of a pixel outline would otherwise show as a comb of
+        # stripes wherever a light runs along an edge.
+        outward = _outward(np.minimum(from_edge, limit), band / 2.0)
+    # A small blur takes the stair-steps off the outline. It is weighted by the shape itself,
+    # so the outermost pixel, the one that matters most, is not dimmed by the nothing beside it.
+    covered = (turn > 0.0).astype(np.float32)
+    weight = cv2.GaussianBlur(covered, (0, 0), RIM_SOFTEN)
+    strength = cv2.GaussianBlur(turn, (0, 0), RIM_SOFTEN) / np.maximum(weight, 1e-3) * covered
+    return np.asarray(outward * np.clip(strength, 0.0, 1.0)[..., None], dtype=np.float32)
 
 
 def _occlusion(
@@ -372,22 +405,32 @@ def _contribution(
         )
         shadow = 1.0 - light.shadow_strength * occluded
 
-    # Rim light: an edge glows when it faces the light, or when the light is behind
-    # the shape; not when the light is in front. Where the edges are and which way
-    # they face comes from the rim map (see rim_field). The rim is not shadowed:
-    # it is exactly the light that gets past the shape.
-    # 1 at the outline, 0 a band's width inside it
-    edge: Tensor = rim_vectors.norm(dim=-1)
-    outward = rim_vectors / edge.clamp_min(1e-4)[..., None]
-    facing = outward[..., 0] * to_light[..., 0] + outward[..., 1] * to_light[..., 1]
-    # A light behind the shape rims every edge, also those turned away from it.
+    # Rim light: the light a shape's rounded edge catches from a light beside or
+    # behind it. The rim map (see rim_field) is the normal of that rounded edge:
+    # (turned.x, turned.y, sqrt(1 - |turned|^2)). Plain diffuse shading on it gives a
+    # band that is bright at the outline, only on the side the light is on, wider
+    # the further round to the side the light is, and as wide as the shape is thick.
+    # It is not shadowed: it is exactly the light that gets past the shape.
+    turn: Tensor = rim_vectors.norm(dim=-1).clamp(max=1.0)  # 1 at the outline, 0 facing us
+    sideways = rim_vectors[..., 0] * to_light[..., 0] + rim_vectors[..., 1] * to_light[..., 1]
     from_back = (-to_light[..., 2]).clamp_min(0.0)
-    amount = (facing.clamp_min(0.0) + RIM_BACK * from_back).clamp(0.0, 1.0)
-    amount = amount * (1.0 - _smoothstep(0.0, RIM_FRONT_FADE, to_light[..., 2]))
-    reach = RIM_THIN + (1.0 - RIM_THIN) * light.diffusion  # a softer light, a broader rim
-    across = ((edge - (1.0 - reach)) / reach).clamp(0.0, 1.0)
-    rim = RIM_STRENGTH * amount * across * across * across  # brightest at the very edge
-    rim_colour = albedo + (1.0 - albedo) * RIM_WHITE
+    # A softer light wraps further round, as in the diffuse term.
+    caught = (sideways + turn * wrap) / (1.0 + wrap) - (1.0 - turn * turn).sqrt() * from_back
+    # Straight from behind, nothing faces the light; what glows is hair, fuzz and cloth
+    # letting it through, on every edge.
+    turn4 = turn * turn * turn * turn
+    glow = RIM_BACK * from_back * from_back * turn4
+    # A light level with the shape lights its side, which the ordinary shading already
+    # does from the photo's own normals; of the rim only the line at the outline is
+    # left. The further behind the light goes, the more of the band it gets.
+    spread = turn4 + (1.0 - turn4) * _smoothstep(0.0, RIM_WRAP, from_back)
+    amount = (caught.clamp_min(0.0) * spread + glow).clamp(0.0, 1.0)
+    # A light in front is the ordinary shading's business.
+    rim = RIM_STRENGTH * amount * (1.0 - _smoothstep(0.0, RIM_FRONT_FADE, to_light[..., 2]))
+    # Seen edge-on, any surface mirrors more of the light: toward the outline the rim takes
+    # the light's own colour, in a line much thinner than the band.
+    sheen = RIM_WHITE * turn4
+    rim_colour = albedo + (1.0 - albedo) * sheen[..., None]
 
     color = torch.tensor(light.color, device=device) * light.intensity
     lit = shadow[..., None] * (albedo * diffuse[..., None] + specular[..., None])
@@ -500,6 +543,7 @@ def shade_scene(
         per_light=[soft_clip(layer * gain) for layer in per_light],
         base=soft_clip(base * gain),
         raw_per_light=[layer * gain for layer in per_light],
+        unclipped=(base + light_sum) * gain,
     )
 
 

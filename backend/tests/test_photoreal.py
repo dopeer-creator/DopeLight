@@ -171,7 +171,7 @@ def test_where_the_model_agrees_the_result_is_the_exact_preview() -> None:
 def test_the_model_scales_the_shading_but_never_the_rim() -> None:
     original, shading = _lit_left_half()
     rim = np.zeros_like(original)
-    rim[:, 90:] = (0.0, 0.1, 0.6)  # a blue rim on the right edge
+    rim[:, 90:] = (0.0, 0.1, 0.4)  # a blue rim on the right edge
     dimmer = np.full((16, 24, 3), 0.5, dtype=np.float32)  # the model: half as bright everywhere
     relit = apply_ratio(photoreal._srgb(original),
                         photoreal.compose_ratio(dimmer, original, shading, rim))
@@ -182,10 +182,10 @@ def test_the_model_scales_the_shading_but_never_the_rim() -> None:
 def test_a_saturated_rim_on_black_keeps_its_colour() -> None:
     black = np.zeros((32, 48, 3), dtype=np.float32)
     rim = np.zeros_like(black)
-    rim[:, 40:] = (0.02, 0.1, 0.9)  # strong blue on dark hair
+    rim[:, 40:] = (0.02, 0.1, 0.75)  # strong blue on dark hair
     agrees = np.ones((8, 12, 3), dtype=np.float32)
     relit = apply_ratio(black, photoreal.compose_ratio(agrees, black, black, rim))
-    assert np.allclose(relit[16, 44], (0.02, 0.1, 0.9), atol=2e-3)  # not capped toward white
+    assert np.allclose(relit[16, 44], (0.02, 0.1, 0.75), atol=2e-3)  # not capped toward white
 
 
 def test_the_model_cannot_lift_what_the_lights_leave_black() -> None:
