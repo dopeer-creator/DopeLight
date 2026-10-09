@@ -174,6 +174,7 @@ def test_a_thin_part_gets_a_thinner_rim_than_a_thick_one() -> None:
     mask = np.zeros((80, wide), dtype=np.float32)
     mask[10:70, 20:80] = 1.0  # a torso, 60 pixels across
     mask[10:70, 120:126] = 1.0  # a finger, 6 pixels across
+    mask[66:70, 80:120] = 1.0  # joined to the torso: a piece on its own would count as a stray
     from_edge = cv2.distanceTransform((mask > 0.5).astype(np.uint8), cv2.DIST_L2, 5)
     radius = shading.local_radius(from_edge.astype(np.float32), wide * shading.RIM_RADIUS)
     assert radius[40, 50] == pytest.approx(wide * shading.RIM_RADIUS)  # capped
@@ -186,6 +187,27 @@ def test_a_thin_part_gets_a_thinner_rim_than_a_thick_one() -> None:
     # away there, the finger already faces the viewer.
     assert turn[40, 77] > turn[40, 123] + 0.25
     assert turn[40, 79] > 0.85 and turn[40, 125] > 0.85  # both are edge-on at the outline
+
+
+def test_rim_ignores_strays_and_uncertain_parts_of_the_mask() -> None:
+    wide = 200
+    mask = np.zeros((80, wide), dtype=np.float32)
+    mask[10:70, 20:80] = 1.0  # the subject
+    mask[5:20, 150:170] = 1.0  # a stray patch, a twelfth of its size
+    flat = np.full((80, wide), 0.5, dtype=np.float32)
+    turn = np.linalg.norm(shading.rim_field(flat, mask), axis=-1)
+    assert turn[40, 79] > 0.85  # the subject's edge
+    assert turn[5:20, 150:170].max() == 0.0  # no outline around the stray
+
+    # The same subject, but its right half is a cloud of greys: the mask model was guessing.
+    rng = np.random.default_rng(5)
+    unsure = mask.copy()
+    unsure[10:70, 50:110] = cv2.GaussianBlur(
+        rng.uniform(0.0, 1.0, (60, 60)).astype(np.float32), (0, 0), 2.0
+    )
+    turn = np.linalg.norm(shading.rim_field(flat, unsure), axis=-1)
+    assert turn[40, 20] > 0.85  # the clean left edge still has its rim
+    assert turn[20:60, 60:100].max() < 0.1  # nothing is traced through the cloud
 
 
 def test_a_light_behind_and_to_one_side_rims_that_side_of_the_subject() -> None:

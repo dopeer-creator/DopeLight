@@ -10,7 +10,9 @@ Continued the work list from the GPU session. Everything here ran on the laptop'
 
 **Rim light follows the form.** Before, a rim was a band of one width and one strength around the subject, which read as an outline drawn around a person. Now each part of the subject gets a rounded edge as thick as the part is (broad on a shoulder, a hairline on a finger), and the rim is the light that edge catches: only on the side the light is on, a bright thin line at the outline fading inward, in the light's colour. A light level with the subject gives just the line; a light behind gives the full band. Live preview shader and Python reference changed together; the parity check (23 scenes) and the app smoke test (29 checks) pass.
 
-**Found on the way.** A rim built from a pixel outline shows comb-like stripes along vertical edges unless the edge direction is blurred well. The helper map file is now `aux_v3.png`; photos opened before get it rebuilt on their next open (quick).
+**Found on the way.** A rim built from a pixel outline shows comb-like stripes along vertical edges unless the edge direction is blurred well. Photos opened before get their helper map rebuilt on the next open (quick).
+
+**Rim light no longer traces a bad cut-out.** On the user's pilot photo the subject cut-out included a piece of the canopy and a ragged patch on one arm, and the rim drew white jagged lines along both. The rim now leaves out stray pieces and uncertain areas of the cut-out. The helper map file is now `aux_v4.png`.
 
 **Progress you can read.** While a render or export runs, the dialog now shows the whole status line, a clock, and the bar under it; a model download fills the bar and says it happens only once. Before, the text was cut to `Dow...` and the bar stayed empty for the whole download.
 

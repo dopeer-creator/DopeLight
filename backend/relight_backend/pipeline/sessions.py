@@ -15,9 +15,9 @@ from typing import Any
 # aux packs the helper maps in one picture: red = where lights reach (0 = sky),
 # green = square root of the photo's large-scale brightness, blue and alpha = the
 # rim map (image_io.save_aux).
-# v2 added the rim map, v3 rounds it by how thick the shape is; a session with only an
-# older file gets a new one.
-AUX_FILE = "aux_v3.png"
+# v2 added the rim map, v3 rounds it by how thick the shape is, v4 leaves out strays and
+# uncertain parts of the mask; a session with only an older file gets a new one.
+AUX_FILE = "aux_v4.png"
 MAP_NAMES = ("albedo_proxy", "normal", "normal_smooth", "depth", "mask", "aux")
 ORIGINAL_FILE = "original.bin"
 META_FILE = "meta.json"

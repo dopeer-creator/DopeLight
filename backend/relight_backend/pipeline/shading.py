@@ -45,6 +45,13 @@ RIM_RADIUS = 0.04  # largest radius a subject's edge is rounded with (fraction o
 RIM_RADIUS_STEP = 1.12  # ratio between the radii tried when measuring how thick a shape is
 RIM_SOFTEN = 0.7  # blur of the rim map, in pixels: takes the stair-steps off the outline
 RIM_MASK_EDGE = 0.25  # mask value from which a pixel counts as the subject's outline
+# A separate piece of the mask counts if it is this large next to the largest. Higher drops a
+# second, smaller subject; lower keeps strays (a third of the subject's size has been seen).
+RIM_MIN_PART = 0.35
+# How sure the mask is around a pixel (0 = all half-tones, 1 = clean black and white): below
+# the first a rim is dropped, from the second it is drawn in full.
+RIM_SURE_LOW = 0.55
+RIM_SURE_HIGH = 0.8
 MIN_SUBJECT_SHARE = 0.02  # a mask covering less of the picture than this is no subject
 MAX_SUBJECT_SHARE = 0.9  # ... nor one covering more than this
 RIM_BACK = 0.3  # glow on every edge from a light straight behind the shape (hair, fuzz, cloth)
@@ -283,6 +290,34 @@ def local_radius(from_edge: FloatArray, limit: float) -> FloatArray:
     return np.asarray(radius, dtype=np.float32)
 
 
+def main_shapes(solid: FloatArray) -> FloatArray:
+    """The mask's large pieces only (0 or 1): the largest, and any at least RIM_MIN_PART its size.
+
+    A subject mask often has strays: a patch of sky, a bit of furniture. An outline
+    drawn around those is a line in the middle of nowhere.
+    """
+    count, labels, stats, _centres = cv2.connectedComponentsWithStats(
+        solid.astype(np.uint8), connectivity=8
+    )
+    if count <= 2:
+        return np.asarray(solid, dtype=np.float32)
+    areas = stats[1:, cv2.CC_STAT_AREA]
+    keep = np.flatnonzero(areas >= RIM_MIN_PART * areas.max()) + 1
+    return np.isin(labels, keep).astype(np.float32)
+
+
+def mask_sureness(mask: FloatArray, sigma: float) -> FloatArray:
+    """0..1: how far the mask around each pixel is clean black and white rather than half-tones.
+
+    A real outline is a step from 0 to 1 within a pixel or two. Where the mask
+    model was guessing, it leaves a cloud of greys, and an outline traced through
+    that is ragged and wrong.
+    """
+    decided = cv2.GaussianBlur(np.abs(2.0 * mask - 1.0), (0, 0), sigma)
+    t = np.clip((decided - RIM_SURE_LOW) / (RIM_SURE_HIGH - RIM_SURE_LOW), 0.0, 1.0)
+    return np.asarray(t * t * (3.0 - 2.0 * t), dtype=np.float32)
+
+
 def rim_field(depth: FloatArray, mask: FloatArray | None = None) -> FloatArray:
     """How the shapes turn away at their outlines: (H, W, 2), x right, y up.
 
@@ -305,15 +340,19 @@ def rim_field(depth: FloatArray, mask: FloatArray | None = None) -> FloatArray:
     if mask is None or not MIN_SUBJECT_SHARE <= share <= MAX_SUBJECT_SHARE:
         turn, outward = _depth_outline(depth, band), _outward(depth, band / 3.0)
     else:
+        # Only the mask's large, certain pieces have an outline worth lighting.
+        solid = main_shapes(np.asarray(mask > 0.5, dtype=np.float32))
+        near = cv2.dilate(solid, np.ones((3, 3), dtype=np.uint8), iterations=2)
         # The outline pixels are part subject, part background; the rim covers them too.
-        inside = (mask > RIM_MASK_EDGE).astype(np.uint8)
+        inside = ((mask > RIM_MASK_EDGE) & (near > 0.0)).astype(np.uint8)
         from_edge = cv2.distanceTransform(inside, cv2.DIST_L2, 5)
         limit = max(4.0, depth.shape[1] * RIM_RADIUS)
         radius = cv2.GaussianBlur(local_radius(np.asarray(from_edge, dtype=np.float32), limit),
                                   (0, 0), band / 6.0)
         # A circle's edge: this far in, the surface has turned by acos(1 - distance / radius).
         turn = np.asarray(
-            np.clip(1.0 - (from_edge - 1.0) / np.maximum(radius, 1.0), 0.0, 1.0) * inside,
+            np.clip(1.0 - (from_edge - 1.0) / np.maximum(radius, 1.0), 0.0, 1.0) * inside
+            * mask_sureness(mask, band / 2.0),
             dtype=np.float32,
         )
         # Blurred well: the staircase of a pixel outline would otherwise show as a comb of
